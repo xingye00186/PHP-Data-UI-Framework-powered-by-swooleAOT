@@ -1,0 +1,9 @@
+name: vue-calc
+version: 1.0.0
+mode: bin
+no-console: false
+sources:
+  - main.php
+  - ./src
+  - ./php-src
+  - ./cpp-src
