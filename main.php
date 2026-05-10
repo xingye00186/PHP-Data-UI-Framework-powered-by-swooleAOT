@@ -1,59 +1,26 @@
 <?php
 
 /**
- * VueCalc - 类 Vue 数据驱动的桌面计算器
+ * VueCalc - 类 Vue 数据驱动的桌面计算器 (SFC 模式)
  * 
  * 架构:
- * - ReactiveComponent: 响应式组件基类 (类似 Vue 的 data + watch)
- * - Calculator: 计算器逻辑组件 (纯 PHP 逻辑)
- * - CalcRenderer: 数据驱动渲染器 (读取组件 state, 驱动 C++ GDI 绘制)
+ * - .vue 单文件组件 → SFC 编译器 → .gen.php (布局 + 组件类)
+ * - ReactiveComponent: 响应式组件基类
+ * - Calculator: 计算器逻辑组件 (100% PHP 逻辑)
+ * - CalcRenderer: 数据驱动渲染器 (读取 LAYOUT 数据 + 组件 state, 驱动 C++ GDI 绘制)
  * - C++ 层: 仅提供 Win32 窗口/GDI 绘制原语
  * 
- * 数据流: 用户点击 -> Calculator.handleButton() -> 响应式属性变更 
- *        -> dirty 标记 -> CalcRenderer.render() 读取最新 state -> C++ 绘制
+ * 数据流: 用户点击 → CalcApp.handleClick() → Calculator.handleButton()
+ *        → 响应式属性变更 → dirty → CalcRenderer.render() → C++ 绘制
  */
 
-// ============================================================
-// 常量
-// ============================================================
-
+// Windows 消息常量
 const SW_SHOW = 5;
 const WM_LBUTTONDOWN = 0x0201;
 const WM_QUIT = 0x0012;
 
-// 布局参数
-const BTN_COLS = 4;
-const BTN_ROWS = 5;
-const BTN_WIDTH = 80;
-const BTN_HEIGHT = 60;
-const BTN_MARGIN = 2;
-const DISPLAY_HEIGHT = 80;
-const WINDOW_WIDTH = BTN_COLS * BTN_WIDTH + 16;
-const WINDOW_HEIGHT = DISPLAY_HEIGHT + BTN_ROWS * BTN_HEIGHT + 40;
-
-// 按钮布局 (5行 x 4列)
-const BUTTONS = [
-    ['C',  '<-', '/',  '*'],
-    ['7',  '8',  '9',  '-'],
-    ['4',  '5',  '6',  '+'],
-    ['1',  '2',  '3',  '='],
-    ['0',  '.',  '',   ''],
-];
-
-// 按钮类型
-const BTN_TYPE_NUM = 0;
-const BTN_TYPE_OP = 1;
-const BTN_TYPE_FUNC = 2;
-const BTN_TYPE_EQ = 3;
-
-// RGB 颜色辅助函数 (BGR 格式)
-function rgb(int $r, int $g, int $b): int
-{
-    return ($r | ($g << 8) | ($b << 16));
-}
-
 // ============================================================
-// 数据驱动渲染器
+// 数据驱动渲染器 (使用 SFC 生成的 LAYOUT 数据)
 // ============================================================
 
 class CalcRenderer
@@ -67,109 +34,98 @@ class CalcRenderer
         $this->component = $component;
     }
 
-    /** 判断按钮类型 */
-    private function getButtonType(string $label): int
+    /** 从组件属性获取绑定值 (避免 AOT 不支持 $obj->$variable) */
+    private function getBindValue(string $bindKey): string
     {
-        if ($label === '=') return BTN_TYPE_EQ;
-        if ($label === '+' || $label === '-' || $label === '*' || $label === '/') return BTN_TYPE_OP;
-        if ($label === 'C' || $label === '<-') return BTN_TYPE_FUNC;
-        return BTN_TYPE_NUM;
+        if ($bindKey === 'expression') {
+            return $this->component->expression;
+        }
+        if ($bindKey === 'display') {
+            return $this->component->display;
+        }
+        return '';
+    }
+
+    /** 渲染文本元素（支持对齐和动态字号） */
+    private function renderTextElement(int $hdc, array $el): void
+    {
+        $bindKey = $el['bind'] ?? '';
+
+        // 仅在绑定了属性且有内容时渲染
+        if ($bindKey !== '') {
+            $text = $this->getBindValue($bindKey);
+            if ($text === '') {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        $fontSize = $el['fontSize'] ?? 16;
+        $color    = $el['color'] ?? 0xFFFFFF;
+        $bold     = $el['bold'] ?? 0;
+        $align    = $el['align'] ?? 'left';
+        $x        = $el['x'] ?? 0;
+        $y        = $el['y'] ?? 0;
+
+        // 动态字号调整（长数字时缩小）
+        $textLen = strlen($text);
+        if ($textLen > 12 && $fontSize > 24) {
+            $fontSize = 24;
+        }
+        if ($textLen > 16 && $fontSize > 18) {
+            $fontSize = 18;
+        }
+
+        // 右对齐：根据容器宽度计算 x 坐标
+        if ($align === 'right' && isset($el['containerW'])) {
+            $containerW = $el['containerW'];
+            $containerX = $el['containerX'] ?? 0;
+            $charWidth  = (int)($fontSize * 0.6);
+            $textWidth  = $textLen * $charWidth;
+            $rightEdge  = $containerX + $containerW;
+            $x = $rightEdge - 12 - $textWidth;
+            if ($x < $containerX + 4) {
+                $x = $containerX + 4;
+            }
+        }
+
+        vue_draw_text($hdc, $x, $y, $text, $fontSize, $color, $bold);
     }
 
     /**
-     * 数据驱动渲染: 从组件 state 读取数据, 驱动 C++ 绘制
-     * 
-     * 这是 "类 Vue" 的核心: render 函数不接收具体参数,
-     * 而是从响应式组件读取最新状态, 实现 UI = f(state)
+     * 数据驱动渲染: 遍历 LAYOUT 数据，从组件 state 读取数据驱动 C++ 绘制
      */
     public function render(): void
     {
         $hdc = vue_begin_paint($this->hWnd);
+        $layout   = getLayout();
+        $elements = $layout['elements'];
+        $buttons  = $layout['buttons'];
 
-        $totalW = BTN_COLS * BTN_WIDTH;
-        $totalH = DISPLAY_HEIGHT + BTN_ROWS * BTN_HEIGHT;
-
-        // 背景
-        vue_fill_rect($hdc, 0, 0, $totalW, $totalH, rgb(30, 30, 30));
-
-        // 显示区域背景
-        vue_fill_rect($hdc, 4, 4, $totalW - 8, DISPLAY_HEIGHT - 8, rgb(45, 45, 45));
-
-        // ---- 数据驱动: 从组件读取 display 和 expression ----
-        $display = $this->component->display;
-        $expression = $this->component->expression;
-
-        // 表达式文本(小号, 右上)
-        if ($expression !== '') {
-            $exprLen = strlen($expression);
-            $exprX = $totalW - 12 - $exprLen * 8;
-            if ($exprX < 10) {
-                $exprX = 10;
+        // 渲染元素 (rect 背景 + text 文本)
+        foreach ($elements as $el) {
+            $type = $el['type'];
+            if ($type === 'rect') {
+                vue_fill_rect($hdc, $el['x'], $el['y'], $el['w'], $el['h'], $el['color']);
+            } elseif ($type === 'text') {
+                $this->renderTextElement($hdc, $el);
             }
-            vue_draw_text($hdc, $exprX, 10, $expression, 16, rgb(150, 150, 150), 0);
         }
 
-        // 显示文本(大号, 右对齐)
-        $displayLen = strlen($display);
-        $fontSize = 32;
-        if ($displayLen > 12) {
-            $fontSize = 24;
-        }
-        if ($displayLen > 16) {
-            $fontSize = 18;
-        }
-        $charWidth = (int)($fontSize * 0.6);
-        $textX = $totalW - 12 - $displayLen * $charWidth;
-        if ($textX < 10) {
-            $textX = 10;
-        }
-        $textY = DISPLAY_HEIGHT - $fontSize - 14;
-        vue_draw_text($hdc, $textX, $textY, $display, $fontSize, rgb(255, 255, 255), 1);
+        // 渲染按钮 (背景 + 边框 + 居中文字)
+        foreach ($buttons as $btn) {
+            // 按钮背景和边框
+            vue_draw_button($hdc, $btn['x'], $btn['y'], $btn['w'], $btn['h'], $btn['bg'], $btn['border']);
 
-        // 绘制按钮 (布局数据驱动)
-        for ($row = 0; $row < BTN_ROWS; $row++) {
-            for ($col = 0; $col < BTN_COLS; $col++) {
-                $label = BUTTONS[$row][$col];
-                if ($label === '') {
-                    continue;
-                }
-
-                $bx = $col * BTN_WIDTH + BTN_MARGIN;
-                $by = DISPLAY_HEIGHT + $row * BTN_HEIGHT + BTN_MARGIN;
-                $bw = BTN_WIDTH - BTN_MARGIN * 2;
-                $bh = BTN_HEIGHT - BTN_MARGIN * 2;
-
-                $type = $this->getButtonType($label);
-
-                // 按钮颜色
-                $bgColor = rgb(50, 50, 50);
-                $textColor = rgb(255, 255, 255);
-
-                if ($type === BTN_TYPE_OP) {
-                    $bgColor = rgb(255, 149, 0);
-                } elseif ($type === BTN_TYPE_EQ) {
-                    $bgColor = rgb(0, 122, 255);
-                } elseif ($type === BTN_TYPE_FUNC) {
-                    $bgColor = rgb(80, 80, 80);
-                }
-
-                $borderColor = rgb(
-                    min(255, (($bgColor >> 16) & 0xFF) + 20),
-                    min(255, (($bgColor >> 8) & 0xFF) + 20),
-                    min(255, ($bgColor & 0xFF) + 20)
-                );
-
-                // 绘制按钮背景和边框
-                vue_draw_button($hdc, $bx, $by, $bw, $bh, $bgColor, $borderColor);
-
-                // 绘制按钮文字(居中)
-                $labelLen = strlen($label);
-                $labelFontSize = 22;
-                $labelCharW = (int)($labelFontSize * 0.6);
-                $labelX = $bx + (int)(($bw - $labelLen * $labelCharW) / 2);
-                $labelY = $by + (int)(($bh - $labelFontSize) / 2);
-                vue_draw_text($hdc, $labelX, $labelY, $label, $labelFontSize, $textColor, 1);
-            }
+            // 按钮文字居中
+            $label = $btn['label'];
+            $labelLen = strlen($label);
+            $labelFontSize = 22;
+            $labelCharW = (int)($labelFontSize * 0.6);
+            $labelX = $btn['x'] + (int)(($btn['w'] - $labelLen * $labelCharW) / 2);
+            $labelY = $btn['y'] + (int)(($btn['h'] - $labelFontSize) / 2);
+            vue_draw_text($hdc, $labelX, $labelY, $label, $labelFontSize, $btn['fg'], 1);
         }
 
         vue_end_paint($this->hWnd, $hdc);
@@ -192,7 +148,7 @@ class CalcApp
         $this->hWnd = 0;
     }
 
-    /** 初始化窗口 */
+    /** 初始化窗口 (使用 SFC 生成 WINDOW_WIDTH/WINDOW_HEIGHT 常量) */
     public function initWindow(): bool
     {
         $this->hWnd = vue_window_create(
@@ -208,7 +164,7 @@ class CalcApp
 
         vue_window_show($this->hWnd, SW_SHOW);
         $this->renderer = new CalcRenderer($this->hWnd, $this->calc);
-        echo "VueCalc window created (Data-Driven Mode)\n";
+        echo "VueCalc window created (SFC Data-Driven Mode)\n";
         return true;
     }
 
@@ -254,7 +210,7 @@ class CalcApp
                 break;
             }
 
-            // ---- 数据驱动渲染: 消息处理完后一次性重绘 ----
+            // 数据驱动渲染: 仅在组件状态变更后重绘
             if ($this->calc->dirty) {
                 try {
                     $this->renderer->render();
@@ -270,31 +226,34 @@ class CalcApp
         echo "VueCalc closed\n";
     }
 
-    /** 处理鼠标点击, 路由到计算器组件 */
+    /** 处理鼠标点击: 基于 LAYOUT 按钮坐标命中测试 */
     private function handleClick(int $x, int $y): void
     {
-        $by = $y - DISPLAY_HEIGHT;
-        if ($by < 0) {
-            return;
+        $buttons = getLayout()['buttons'];
+
+        foreach ($buttons as $btn) {
+            if ($x >= $btn['x'] && $x < $btn['x'] + $btn['w'] &&
+                $y >= $btn['y'] && $y < $btn['y'] + $btn['h']) {
+                $this->dispatchClick($btn);
+                return;
+            }
         }
+    }
 
-        $col = intdiv($x, BTN_WIDTH);
-        $row = intdiv($by, BTN_HEIGHT);
+    /** 分发按钮点击到组件方法 (显式路由，兼容 AOT 编译器) */
+    private function dispatchClick(array $btn): void
+    {
+        $handler = $btn['handler'];
+        $arg     = $btn['arg'];
 
-        if ($row < 0 || $row >= BTN_ROWS || $col < 0 || $col >= BTN_COLS) {
-            return;
-        }
-
-        $label = BUTTONS[$row][$col];
-        if ($label === '') {
-            return;
-        }
-
-        // 数据驱动: 修改组件状态, 自动触发下次渲染
-        try {
-            $this->calc->handleButton($label);
-        } catch (\Throwable $e) {
-            echo "ERROR: " . $e->getMessage() . "\n" . $e->getTraceAsString() . "\n";
+        if ($handler === 'reset') {
+            $this->calc->reset();
+        } elseif ($handler === 'backspace') {
+            $this->calc->backspace();
+        } elseif ($handler === 'calculate') {
+            $this->calc->calculate();
+        } elseif ($handler === 'handleButton') {
+            $this->calc->handleButton($arg);
         }
     }
 }
@@ -308,15 +267,15 @@ function main(): int
     date_default_timezone_set('Asia/Shanghai');
 
     echo "========================================\n";
-    echo "  VueCalc - Reactive Data-Driven Demo\n";
-    echo "  Framework: Class-Vue Reactive Model\n";
-    echo "  (100% PHP Logic + C++ Rendering)\n";
+    echo "  VueCalc - SFC Data-Driven Calculator\n";
+    echo "  Pipeline: .vue → SFC Compiler → .gen.php → AOT → .exe\n";
+    echo "  (PHP Logic + C++ GDI Rendering)\n";
     echo "========================================\n\n";
 
     // 1. 初始化响应式框架的共享内存和变更队列
     ReactiveComponent::initShared(10240);
 
-    // 2. 创建计算器组件(响应式)
+    // 2. 创建计算器组件 (SFC 编译生成的 ReactiveComponent 子类)
     $calc = new Calculator('MainCalculator');
 
     // 3. 创建应用并启动
