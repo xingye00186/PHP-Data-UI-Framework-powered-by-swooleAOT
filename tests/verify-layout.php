@@ -3,7 +3,7 @@
  * Quick verification of generated layout output.
  * Run: php tests/verify-layout.php
  */
-require_once __DIR__ . '/../src/CalculatorLayout_gen.php';
+require_once __DIR__ . '/../gen/CalculatorLayout_gen.php';
 
 $l = getLayout();
 

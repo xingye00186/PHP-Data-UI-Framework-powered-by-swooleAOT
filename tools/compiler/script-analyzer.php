@@ -1,0 +1,280 @@
+<?php
+/**
+ * Script Analyzer for SFC Compiler v4
+ *
+ * Analyzes PHP script blocks extracted from .vue <script> sections.
+ * Automatically injects $this->dirty = true markers into methods
+ * that modify reactive component properties.
+ *
+ * This eliminates the need for developers to manually write dirty markers
+ * in every state-mutating method (D6 technical debt).
+ *
+ * Usage: Used internally by sfc-compiler.php during code generation.
+ */
+
+class ScriptAnalyzer
+{
+    /** @var string[] Property names declared in the component (e.g., 'display', 'expression') */
+    private array $propertyNames = [];
+
+    /**
+     * Analyze and transform a PHP script block: remove all manual dirty markers,
+     * then auto-inject them into methods that modify component properties.
+     *
+     * @param string $script Raw script block content from .vue file
+     * @return string Transformed script with auto-injected dirty markers
+     */
+    public function injectDirty(string $script): string
+    {
+        // Step 1: Extract property names from declarations
+        $this->propertyNames = $this->extractPropertyNames($script);
+
+        if (empty($this->propertyNames)) {
+            return $script; // No reactive properties — nothing to do
+        }
+
+        // Step 2: Remove ALL existing manual $this->dirty = true; lines
+        $script = $this->removeExistingDirty($script);
+
+        // Step 3: Process each method and auto-inject dirty markers
+        $script = $this->injectDirtyIntoMethods($script);
+
+        return $script;
+    }
+
+    // ─── Step 1: Property extraction ────────────────────────────────
+
+    /**
+     * Extract property names from declarations like:
+     *   public string $display = '0';
+     *   public bool $newInput = true;
+     *   public int $count;
+     */
+    private function extractPropertyNames(string $script): array
+    {
+        $props = [];
+        // Match typed property declarations
+        if (preg_match_all(
+            '/public\s+(?:string|bool|int|float|array)\s+\$(\w+)\s*[=;]/',
+            $script,
+            $matches
+        )) {
+            $props = $matches[1];
+        }
+        return $props;
+    }
+
+    // ─── Step 2: Remove manual dirty markers ─────────────────────────
+
+    /**
+     * Remove all existing manual $this->dirty = true; lines.
+     * These will be re-injected automatically by the compiler.
+     */
+    private function removeExistingDirty(string $script): string
+    {
+        // Remove lines where the ONLY content is $this->dirty = true;
+        // (with any amount of leading whitespace)
+        return preg_replace('/^[ \t]*\$this->dirty\s*=\s*true\s*;\s*$/m', '', $script);
+    }
+
+    // ─── Step 3: Auto-inject dirty markers ───────────────────────────
+
+    /**
+     * State-machine based method processor.
+     * Walks through the script line by line, tracks method boundaries
+     * via brace counting, and processes each complete method body.
+     */
+    private function injectDirtyIntoMethods(string $script): string
+    {
+        $lines   = explode("\n", $script);
+        $output  = [];
+        $state   = 'outside';     // 'outside' | 'header' | 'body'
+        $buffer  = [];            // Lines of current method body
+        $braceDepth = 0;
+        $inHeader   = false;
+        $methodName = '';
+        $headerLines = [];        // Lines from 'public function' to (and including) '{'
+
+        foreach ($lines as $i => $line) {
+            if ($state === 'outside') {
+                // Detect method start: public function xxx(
+                if (preg_match('/^\s*(public\s+)?function\s+(\w+)\s*\(/', $line, $m)) {
+                    $methodName  = $m[2];
+                    $state       = 'header';
+                    $headerLines = [$line];
+                    $braceDepth  = 0;
+                    $buffer      = [];
+                    $inHeader    = true;
+
+                    // Check if opening brace is on this line
+                    $opens  = substr_count($line, '{');
+                    $closes = substr_count($line, '}');
+                    $braceDepth = $opens - $closes;
+
+                    if ($braceDepth > 0) {
+                        // Opening brace found — split into header + body
+                        $bracePos = strrpos($line, '{');
+                        $headerPart = substr($line, 0, $bracePos + 1);
+                        $bodyPart   = substr($line, $bracePos + 1);
+
+                        $headerLines = [$headerPart];
+                        if (trim($bodyPart) !== '') {
+                            $buffer[] = $bodyPart;
+                        }
+                        $state = 'body';
+                        $inHeader = false;
+                    }
+                    // else: brace not on this line, stay in 'header' mode
+                } else {
+                    $output[] = $line;
+                }
+            } elseif ($state === 'header') {
+                // Still looking for the opening brace
+                $headerLines[] = $line;
+                $opens  = substr_count($line, '{');
+                $closes = substr_count($line, '}');
+                $braceDepth += ($opens - $closes);
+
+                if ($braceDepth > 0) {
+                    // Found it — split header from body
+                    $bracePos = strrpos($line, '{');
+                    $headerPart = substr($line, 0, $bracePos + 1);
+                    $bodyPart   = substr($line, $bracePos + 1);
+
+                    // Replace last header line with header-only part
+                    $headerLines[count($headerLines) - 1] = $headerPart;
+                    if (trim($bodyPart) !== '') {
+                        $buffer[] = $bodyPart;
+                    }
+                    $state = 'body';
+                    $inHeader = false;
+                }
+            } elseif ($state === 'body') {
+                // Inside method body — track braces
+                $opens  = substr_count($line, '{');
+                $closes = substr_count($line, '}');
+                $braceDepth += ($opens - $closes);
+
+                if ($braceDepth <= 0) {
+                    // Method closes on this line
+                    // Preserve the indentation of the closing brace
+                    $closeIndent = '';
+                    if (preg_match('/^(\s*)/', $line, $m)) {
+                        $closeIndent = $m[1];
+                    }
+                    $closeBracePos = strrpos($line, '}');
+                    $bodyLastPart  = substr($line, strlen($closeIndent), $closeBracePos - strlen($closeIndent));
+                    $closeBrace    = $closeIndent . '}';
+
+                    if (trim($bodyLastPart) !== '') {
+                        $buffer[] = $bodyLastPart;
+                    }
+
+                    // ── Process the complete method ──
+                    $methodBody = implode("\n", $buffer);
+                    $methodBody = $this->processMethodBody($methodName, $methodBody);
+
+                    // Output: header + processed body + closing brace
+                    foreach ($headerLines as $hl) {
+                        $output[] = $hl;
+                    }
+                    // The header already includes '{' — add body after it
+                    if ($methodBody !== '') {
+                        // Body already has newlines; we need to ensure it starts on new line
+                        $output[count($output) - 1] .= "\n" . $methodBody;
+                    }
+                    // Closing brace on its own line
+                    $output[] = $closeBrace;
+
+                    // Reset state
+                    $state    = 'outside';
+                    $buffer   = [];
+                    $headerLines = [];
+                    $methodName = '';
+                } else {
+                    $buffer[] = $line;
+                }
+            }
+        }
+
+        return implode("\n", $output);
+    }
+
+    /**
+     * Process a single method body:
+     * - If the method modifies component properties, inject dirty markers
+     *   before each return statement and at the end of the method.
+     * - Skip __construct (no dirty needed).
+     * - Skip methods that don't modify any reactive property.
+     */
+    private function processMethodBody(string $methodName, string $body): string
+    {
+        // Skip constructor
+        if ($methodName === '__construct') {
+            return $body;
+        }
+
+        // Check if this method modifies any reactive property
+        if (!$this->methodModifiesProperties($body)) {
+            return $body;
+        }
+
+        // Determine indentation from existing body lines
+        $indent = $this->detectBodyIndent($body);
+        $dirtyLine = $indent . '$this->dirty = true;';
+
+        // 1. Inject dirty before each return statement
+        // Captures each return's actual indentation for proper nesting
+        $body = preg_replace(
+            '/^(\s*)(return\s*[^;]*;)/m',
+            '$1$this->dirty = true;' . "\n" . '$1$2',
+            $body
+        );
+
+        // 2. Inject dirty at the end of the method body (before the closing brace)
+        $body = rtrim($body);
+        if ($body !== '') {
+            $body .= "\n" . $dirtyLine;
+        } else {
+            $body = $dirtyLine;
+        }
+
+        return $body;
+    }
+
+    /**
+     * Check if a method body contains assignments to any declared property.
+     * Detects patterns like:
+     *   $this->display = '0';
+     *   $this->display .= $digit;
+     *   $this->newInput = true;
+     */
+    private function methodModifiesProperties(string $body): bool
+    {
+        foreach ($this->propertyNames as $prop) {
+            $pattern = '/\$this->' . preg_quote($prop, '/') . '\s*(?:=|\.=)/';
+            if (preg_match($pattern, $body)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Detect the indentation level used in the method body.
+     * Returns a string of spaces/tabs matching the first non-empty line's indentation.
+     */
+    private function detectBodyIndent(string $body): string
+    {
+        $lines = explode("\n", $body);
+        foreach ($lines as $line) {
+            if (trim($line) !== '' && !preg_match('/^\s*\/\*/', $line)) {
+                // Found first non-empty, non-comment line — extract its leading whitespace
+                if (preg_match('/^(\s*)/', $line, $m)) {
+                    return $m[1];
+                }
+            }
+        }
+        return '        '; // default: 8 spaces
+    }
+}

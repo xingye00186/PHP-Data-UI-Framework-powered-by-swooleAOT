@@ -6,8 +6,8 @@
     <!-- 显示区域背景 -->
     <rect x="4" y="4" w="320" h="72" class="display-bg" />
     
-    <!-- 表达式文本（小号，左上角，灰色） -->
-    <text x="10" y="10" :bind="expression" class="expr-text" align="left" />
+    <!-- 表达式文本（小号，左上角，灰色）- v4: 使用 v-model 双向绑定 + v-if 条件渲染 -->
+    <text x="10" y="10" v-model="expression" v-if="expression" class="expr-text" align="left" />
     
     <!-- 显示值文本（大号，右对齐，白色粗体） -->
     <text y="36" :bind="display" class="display-text" align="right" container-w="320" container-x="4" />
@@ -69,7 +69,6 @@
         $this->operator = '';
         $this->newInput = true;
         $this->hasDecimal = false;
-        $this->dirty = true;
     }
 
     /** 输入数字 */
@@ -86,7 +85,6 @@
                 $this->display .= $digit;
             }
         }
-        $this->dirty = true;
     }
 
     /** 输入小数点 */
@@ -100,7 +98,6 @@
             $this->display .= '.';
             $this->hasDecimal = true;
         }
-        $this->dirty = true;
     }
 
     /** 输入运算符 */
@@ -113,7 +110,6 @@
         $this->operator = $op;
         $this->expression = $this->operand1 . ' ' . $op;
         $this->newInput = true;
-        $this->dirty = true;
     }
 
     /** 执行计算 */
@@ -141,7 +137,6 @@
                 $this->operand1 = '';
                 $this->operator = '';
                 $this->newInput = true;
-                $this->dirty = true;
                 return;
             }
             $result = $a / $b;
@@ -158,7 +153,6 @@
         $this->operator = '';
         $this->newInput = true;
         $this->hasDecimal = strpos($this->display, '.') !== false;
-        $this->dirty = true;
     }
 
     /** 退格 */
@@ -177,7 +171,6 @@
             }
             $this->display = substr($this->display, 0, -1);
         }
-        $this->dirty = true;
     }
 
     /** 处理按钮点击 */

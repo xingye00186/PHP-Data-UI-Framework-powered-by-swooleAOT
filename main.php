@@ -34,16 +34,10 @@ class CalcRenderer
         $this->component = $component;
     }
 
-    /** 从组件属性获取绑定值 (避免 AOT 不支持 $obj->$variable) */
+    /** 从组件属性获取绑定值 (v4: 委托给生成的 getBindValue 方法，避免手动 if/else 链) */
     private function getBindValue(string $bindKey): string
     {
-        if ($bindKey === 'expression') {
-            return $this->component->expression;
-        }
-        if ($bindKey === 'display') {
-            return $this->component->display;
-        }
-        return '';
+        return $this->component->getBindValue($bindKey);
     }
 
     /** 渲染文本元素（支持对齐和动态字号） */
@@ -105,6 +99,10 @@ class CalcRenderer
 
         // 渲染元素 (rect 背景 + text 文本)
         foreach ($elements as $el) {
+            // v4 M2.5: v-if condition check
+            if (isset($el['condition']) && !$this->component->evalCondition($el['condition'])) {
+                continue;
+            }
             $type = $el['type'];
             if ($type === 'rect') {
                 vue_fill_rect($hdc, $el['x'], $el['y'], $el['w'], $el['h'], $el['color']);
@@ -115,6 +113,10 @@ class CalcRenderer
 
         // 渲染按钮 (背景 + 边框 + 居中文字)
         foreach ($buttons as $btn) {
+            // v4 M2.5: v-if condition check
+            if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) {
+                continue;
+            }
             // 按钮背景和边框
             vue_draw_button($hdc, $btn['x'], $btn['y'], $btn['w'], $btn['h'], $btn['bg'], $btn['border']);
 
@@ -240,21 +242,10 @@ class CalcApp
         }
     }
 
-    /** 分发按钮点击到组件方法 (显式路由，兼容 AOT 编译器) */
+    /** 分发按钮点击到组件方法 (v4: 委托给生成的 dispatchClick 方法，避免手动 if/else 链) */
     private function dispatchClick(array $btn): void
     {
-        $handler = $btn['handler'];
-        $arg     = $btn['arg'];
-
-        if ($handler === 'reset') {
-            $this->calc->reset();
-        } elseif ($handler === 'backspace') {
-            $this->calc->backspace();
-        } elseif ($handler === 'calculate') {
-            $this->calc->calculate();
-        } elseif ($handler === 'handleButton') {
-            $this->calc->handleButton($arg);
-        }
+        $this->calc->dispatchClick($btn);
     }
 }
 

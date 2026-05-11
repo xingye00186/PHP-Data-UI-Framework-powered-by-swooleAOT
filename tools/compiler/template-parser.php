@@ -321,11 +321,12 @@ class TemplateParser
         $attrs = $this->parseAttrs($tok->content);
         $this->advance();
 
-        $x   = (int)($attrs['x'] ?? 0);
-        $y   = (int)($attrs['y'] ?? 0);
-        $w   = (int)($attrs['w'] ?? 0);
-        $h   = (int)($attrs['h'] ?? 0);
-        $cls = $attrs['class'] ?? '';
+        $x    = (int)($attrs['x'] ?? 0);
+        $y    = (int)($attrs['y'] ?? 0);
+        $w    = (int)($attrs['w'] ?? 0);
+        $h    = (int)($attrs['h'] ?? 0);
+        $cls  = $attrs['class'] ?? '';
+        $vIf  = $attrs['v-if'] ?? '';   // v4 M2.5
 
         if ($w === 0 || $h === 0) {
             $this->error("<rect> has zero width or height", $tok->line);
@@ -334,7 +335,9 @@ class TemplateParser
             $this->error("<rect> missing class attribute", $tok->line);
         }
 
-        return new RectNode($x, $y, $w, $h, $cls, $tok->line);
+        $node = new RectNode($x, $y, $w, $h, $cls, $tok->line);
+        $node->vIf = $vIf;
+        return $node;
     }
 
     private function parseText(Token $tok): TextNode
@@ -342,22 +345,36 @@ class TemplateParser
         $attrs = $this->parseAttrs($tok->content);
         $this->advance();
 
-        $x     = (int)($attrs['x'] ?? 0);
-        $y     = (int)($attrs['y'] ?? 0);
-        $bind  = $attrs[':bind'] ?? '';
-        $cls   = $attrs['class'] ?? '';
-        $align = $attrs['align'] ?? 'left';
-        $contW = (int)($attrs['container-w'] ?? 0);
-        $contX = (int)($attrs['container-x'] ?? 0);
+        $x      = (int)($attrs['x'] ?? 0);
+        $y      = (int)($attrs['y'] ?? 0);
+        $bind   = $attrs[':bind'] ?? '';
+        $vModel = $attrs['v-model'] ?? '';   // v4 M2.4
+        $vIf    = $attrs['v-if'] ?? '';      // v4 M2.5
+        $cls    = $attrs['class'] ?? '';
+        $align  = $attrs['align'] ?? 'left';
+        $contW  = (int)($attrs['container-w'] ?? 0);
+        $contX  = (int)($attrs['container-x'] ?? 0);
+
+        // v4 M2.4: v-model and :bind are mutually exclusive
+        if ($vModel !== '' && $bind !== '') {
+            $this->error("<text> cannot have both v-model and :bind — they are mutually exclusive", $tok->line);
+        }
+
+        // v4 M2.4: v-model implies :bind
+        if ($vModel !== '') {
+            $bind = $vModel;
+        }
 
         if ($bind === '') {
-            $this->error('<text> has no :bind attribute (will never render text)', $tok->line);
+            $this->error('<text> has no :bind or v-model attribute (will never render text)', $tok->line);
         }
         if ($cls === '') {
             $this->error('<text> missing class attribute', $tok->line);
         }
 
-        return new TextNode($x, $y, $bind, $cls, $align, $contW, $contX, $tok->line);
+        $node = new TextNode($x, $y, $bind, $cls, $align, $contW, $contX, $tok->line, $vModel);
+        $node->vIf = $vIf;
+        return $node;
     }
 
     private function parseGrid(Token $openTok): GridNode
@@ -372,8 +389,10 @@ class TemplateParser
         $cellW  = (int)($attrs['cell-w'] ?? 80);
         $cellH  = (int)($attrs['cell-h'] ?? 60);
         $margin = (int)($attrs['margin'] ?? 4);
+        $vIf    = $attrs['v-if'] ?? '';   // v4 M2.5
 
         $grid = new GridNode($x, $y, $cols, $rows, $cellW, $cellH, $margin, $openTok->line);
+        $grid->vIf = $vIf;
 
         // Parse <btn> children until </grid>
         while (true) {
@@ -430,6 +449,7 @@ class TemplateParser
         $label = $attrs['label'] ?? '';
         $cls   = $attrs['class'] ?? '';
         $click = $attrs['@click'] ?? '';
+        $vIf   = $attrs['v-if'] ?? '';   // v4 M2.5
 
         // Parse @click: "method" or "method('arg')"
         $handler = $click;
@@ -446,7 +466,9 @@ class TemplateParser
             $this->error('<btn> missing @click handler', $tok->line);
         }
 
-        return new BtnNode($row, $col, $label, $cls, $handler, $arg, $tok->line);
+        $node = new BtnNode($row, $col, $label, $cls, $handler, $arg, $tok->line);
+        $node->vIf = $vIf;
+        return $node;
     }
 
     // ============================================================
@@ -465,11 +487,14 @@ class TemplateParser
     {
         $elements = [];
         $buttons  = [];
+        $bindKeys = [];    // v4 M2.2: collect unique :bind keys for getBindValue generation
+        $handlerMap = [];  // v4 M2.3: handler => hasArg, for auto dispatchClick generation
+        $condProps = [];   // v4 M2.5: collect property names from v-if conditions for evalCondition generation
 
         foreach ($app->children as $child) {
             if ($child instanceof RectNode) {
                 $style = $classStyles[$child->class] ?? [];
-                $elements[] = [
+                $el = [
                     'type'  => 'rect',
                     'x'     => $child->x,
                     'y'     => $child->y,
@@ -477,6 +502,12 @@ class TemplateParser
                     'h'     => $child->h,
                     'color' => $style['bg'] ?? 0,
                 ];
+                // v4 M2.5: v-if condition
+                if ($child->vIf !== '') {
+                    $el['condition'] = $this->parseVIfCondition($child->vIf);
+                    $condProps[$el['condition']['prop']] = true;
+                }
+                $elements[] = $el;
             } elseif ($child instanceof TextNode) {
                 $style = $classStyles[$child->class] ?? [];
                 $el = [
@@ -493,7 +524,16 @@ class TemplateParser
                     $el['containerW'] = $child->containerW;
                     $el['containerX'] = $child->containerX;
                 }
+                // v4 M2.5: v-if condition
+                if ($child->vIf !== '') {
+                    $el['condition'] = $this->parseVIfCondition($child->vIf);
+                    $condProps[$el['condition']['prop']] = true;
+                }
                 $elements[] = $el;
+                // Collect unique bind keys
+                if ($child->bind !== '') {
+                    $bindKeys[$child->bind] = true;
+                }
             } elseif ($child instanceof GridNode) {
                 // Grid's buttons are computed at compile-time
                 $gx = $child->x;
@@ -510,7 +550,7 @@ class TemplateParser
                     $bw = $child->cellW - $child->margin * 2;
                     $bh = $child->cellH - $child->margin * 2;
 
-                    $buttons[] = [
+                    $btnData = [
                         'label'   => $btn->label,
                         'x'       => $bx,
                         'y'       => $by,
@@ -522,6 +562,18 @@ class TemplateParser
                         'handler' => $btn->handler,
                         'arg'     => $btn->arg,
                     ];
+                    // v4 M2.5: v-if condition on button
+                    if ($btn->vIf !== '') {
+                        $btnData['condition'] = $this->parseVIfCondition($btn->vIf);
+                        $condProps[$btnData['condition']['prop']] = true;
+                    }
+                    $buttons[] = $btnData;
+                    // v4 M2.3: collect handler info for auto dispatchClick generation
+                    if (!isset($handlerMap[$btn->handler])) {
+                        $handlerMap[$btn->handler] = ($btn->arg !== null);
+                    } elseif ($btn->arg !== null) {
+                        $handlerMap[$btn->handler] = true;
+                    }
                 }
             } elseif ($child instanceof UnknownNode) {
                 // Unknown tags are skipped in layout output (already reported as error)
@@ -535,8 +587,11 @@ class TemplateParser
         }
 
         return [
-            'elements' => $elements,
-            'buttons'  => $buttons,
+            'elements'    => $elements,
+            'buttons'     => $buttons,
+            'bindKeys'    => array_keys($bindKeys),     // v4 M2.2: for auto getBindValue generation
+            'handlerMap'  => $handlerMap,               // v4 M2.3: for auto dispatchClick generation
+            'condProps'   => array_keys($condProps),    // v4 M2.5: for auto evalCondition generation
         ];
     }
 
@@ -607,6 +662,28 @@ class TemplateParser
         }
     }
 
+    /**
+     * v4 M2.5: Parse v-if condition string into a structured condition array.
+     * 
+     * Supported forms:
+     *   "propName"            → ['prop' => 'propName', 'op' => 'truthy']
+     *   "propName == 'val'"   → ['prop' => 'propName', 'op' => '==', 'value' => 'val']
+     *   "propName != 'val'"   → ['prop' => 'propName', 'op' => '!=', 'value' => 'val']
+     */
+    private function parseVIfCondition(string $vIf): array
+    {
+        // Equality/inequality comparison
+        if (preg_match("/^(\w+)\s*(==|!=)\s*'([^']*)'$/", $vIf, $m)) {
+            return ['prop' => $m[1], 'op' => $m[2], 'value' => $m[3]];
+        }
+        // Simple truthy check (non-empty property)
+        if (preg_match('/^(\w+)$/', $vIf)) {
+            return ['prop' => $vIf, 'op' => 'truthy'];
+        }
+        // Fallback: treat as truthy (best-effort)
+        return ['prop' => $vIf, 'op' => 'truthy'];
+    }
+
     private function error(string $message, int $line): void
     {
         $this->errors[] = new TemplateParseError($message, $line);
@@ -635,6 +712,7 @@ class TemplateParser
                 $result['w'] = $node->w;
                 $result['h'] = $node->h;
                 $result['class'] = $node->class;
+                if ($node->vIf !== '') $result['vIf'] = $node->vIf;
                 break;
 
             case 'TextNode':
@@ -643,6 +721,8 @@ class TemplateParser
                 $result['bind'] = $node->bind;
                 $result['class'] = $node->class;
                 $result['align'] = $node->align;
+                if ($node->vModel !== '') $result['vModel'] = $node->vModel;
+                if ($node->vIf !== '') $result['vIf'] = $node->vIf;
                 if ($node->hasContainer) {
                     $result['containerW'] = $node->containerW;
                     $result['containerX'] = $node->containerX;
@@ -657,6 +737,7 @@ class TemplateParser
                 $result['cellW'] = $node->cellW;
                 $result['cellH'] = $node->cellH;
                 $result['margin'] = $node->margin;
+                if ($node->vIf !== '') $result['vIf'] = $node->vIf;
                 $result['buttons'] = array_map([$this, 'astToArray'], $node->buttons);
                 break;
 
@@ -667,6 +748,7 @@ class TemplateParser
                 $result['class'] = $node->class;
                 $result['handler'] = $node->handler;
                 $result['arg'] = $node->arg;
+                if ($node->vIf !== '') $result['vIf'] = $node->vIf;
                 break;
 
             case 'UnknownNode':

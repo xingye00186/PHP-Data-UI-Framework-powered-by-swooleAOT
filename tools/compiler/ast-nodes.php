@@ -11,6 +11,9 @@ abstract class TemplateNode
     /** Source file line number (1-based) */
     public int $line;
 
+    /** v4 M2.5: v-if condition (empty string = no condition) */
+    public string $vIf = '';
+
     public function __construct(int $line = 0)
     {
         $this->line = $line;
@@ -59,6 +62,7 @@ class TextNode extends TemplateNode
     public int $x;
     public int $y;
     public string $bind;       // :bind="prop"
+    public string $vModel;     // v4 M2.4: v-model="prop" (mutually exclusive with :bind)
     public string $class;
     public string $align;      // left|right
     public int $containerW;
@@ -69,12 +73,14 @@ class TextNode extends TemplateNode
         int $x, int $y, string $bind, string $class,
         string $align = 'left',
         int $containerW = 0, int $containerX = 0,
-        int $line = 0
+        int $line = 0,
+        string $vModel = ''   // v4 M2.4
     ) {
         parent::__construct($line);
         $this->x           = $x;
         $this->y           = $y;
         $this->bind        = $bind;
+        $this->vModel      = $vModel;
         $this->class       = $class;
         $this->align       = $align;
         $this->containerW  = $containerW;
