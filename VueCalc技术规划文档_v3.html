@@ -1915,10 +1915,422 @@ function needsDirtyInjection(string $methodBody): bool {
 <tr><td>§5.3 M1 实施细节</td><td>5 个新文件设计 + 2 个改动文件 + AST 节点类定义 + AOT 校验器伪代码 + 6 项验收标准</td><td>基于 sfc-compiler.php 现有结构推演</td></tr>
 <tr><td>§6.4 构建环境参数</td><td>6 个组件的精确路径/版本 + 完整构建命令序列</td><td>compile_vue_calc.bat + project.yml 实际配置</td></tr>
 <tr><td>§6.5 M2 实施细节</td><td>5 项代码生成能力表 + auto-dirty 插入算法伪代码 + 5 项验收标准</td><td>基于 Calculator.vue + main.php 现有模式推演</td></tr>
+<tr style="border-top:2px solid var(--accent2)"><td><strong>§8 运行时架构深度分析</strong></td><td><strong>CalcRenderer/CalcApp 逐方法分析、消息泵双循环、帧率性能剖析、AOT 设计模式目录(5项)、main.php M2 演进路线</strong></td><td><strong>main.php (291行) 完整代码 + CalculatorLayout_gen.php + Calculator.vue + ReactiveComponent.php</strong></td></tr>
 </table>
 
 <div class="success">
   <strong>v2 最重要的成就</strong>：不是实现了某个具体功能，而是<strong>验证了「PHP SFC → AOT → 原生 exe」这条技术路线的完全可行性</strong>。从「理论上应该可以」变成了「实际跑通了」，并积累了 7 条 AOT 约束规则 + 4 个 SFC 编译器 bug 修复经验 + 10 项技术债务清单。本文档将所有经验系统化为可执行的行动计划，为 M1/M2 提供了精确的文件级、行号级实施方案。
+</div>
+
+
+<!-- ===== 第八章：运行时架构深度分析 ===== -->
+<h1>八、运行时架构深度分析 (基于 main.php)</h1>
+
+<p>本章聚焦 <code>main.php</code> (291行) 中的两个运行时类——<code>CalcRenderer</code> 与 <code>CalcApp</code>——从执行流程、AOT 兼容模式、性能特征三个维度进行分析。与编译器章节（§5/§6）不同，本章关注<strong>已编译应用的运行时行为</strong>和<strong>main.php 中硬编码模式的自动生成可行性</strong>。</p>
+
+<h2>8.1 运行时类协作与完整数据流</h2>
+
+<p>main.php 定义了两个类，加上 SFC 生成的 <code>Calculator</code> 和 <code>getLayout()</code>，构成完整的运行时架构：</p>
+
+<pre><code>// ================ 运行时类关系 ================
+//
+//   CalcApp (控制器)
+//   ├── $calc: Calculator          ← SFC 生成的 ReactiveComponent 子类
+//   ├── $hWnd: int                 ← C++ 窗口句柄
+//   └── $renderer: CalcRenderer    ← 数据驱动渲染器
+//              ├── $hWnd: int
+//              └── $component: Calculator
+//
+//   外部数据 (SFC 生成):
+//   ├── getLayout(): array         ← CalculatorLayout_gen.php 提供
+//   ├── WINDOW_WIDTH / HEIGHT      ← 编译期常量
+//   └── C++ 函数 (9个 vue_* )     ← vue_calc.stub.php 声明
+
+// ================ 点击→像素 完整数据流 ================
+
+// ① C++ 消息泵捕获 WM_LBUTTONDOWN (cpp-src/vue_calc.cc)
+php_vue_peek_message() → [hwnd, 0x0201, x, y]
+
+// ② PHP 解析消息 (main.php:186-198)
+$msgType == WM_LBUTTONDOWN
+→ $mx = $lParam & 0xFFFF;        // 低16位 = X坐标
+→ $my = ($lParam >> 16) & 0xFFFF; // 高16位 = Y坐标
+
+// ③ 命中测试 (main.php:230-241)
+CalcApp.handleClick($mx, $my)
+→ 遍历 getLayout()['buttons'] (18个按钮)
+→ 检测 $x ∈ [btn.x, btn.x+btn.w) && $y ∈ [btn.y, btn.y+btn.h)
+
+// ④ 显式事件分发 (main.php:243-258) ─── AOT 关键模式
+dispatchClick(['handler'=>'handleButton', 'arg'=>'7'])
+→ if ($handler === 'reset') { ... }
+  elseif ($handler === 'backspace') { ... }
+  elseif ($handler === 'calculate') { ... }
+  elseif ($handler === 'handleButton') { ... }
+
+// ⑤ 业务逻辑 (Calculator.vue → Calculator.gen.php)
+Calculator.handleButton('7')
+→ Calculator.inputDigit('7')
+→ $this->display = '7';
+→ $this->dirty = true;            // ← 手动脏标记 (M2 将自动插入)
+
+// ⑥ 主循环检测脏标记 (main.php:213-221)
+if ($this->calc->dirty) {
+    $this->renderer->render();
+    $this->calc->dirty = false;
+}
+
+// ⑦ 数据驱动渲染 (main.php:99-131)
+CalcRenderer.render()
+→ getLayout() 读取编译期生成的布局数据
+→ elements: 遍历4个元素 (rect×2 + text×2)
+→ buttons:  遍历18个按钮 (vue_draw_button + 标签居中)
+→ GDI 双缓冲绘制 → 屏幕</code></pre>
+
+<h2>8.2 CalcRenderer: 数据驱动的渲染桥接器</h2>
+
+<h3>8.2.1 构造函数: 依赖注入模式</h3>
+
+<pre><code>// main.php:26-35
+class CalcRenderer {
+    private int $hWnd;                    // C++ 窗口句柄 (int 传递)
+    private Calculator $component;         // 强类型依赖注入
+
+    public function __construct(int $hWnd, Calculator $component) {
+        $this->hWnd = $hWnd;
+        $this->component = $component;
+    }
+}</code></pre>
+
+<div class="info"><strong>AOT 设计要点</strong>：<code>$component</code> 声明为具体类型 <code>Calculator</code>，而非接口或基类引用。这是 AOT 约束下的最优实践——编译器在编译期即可确定所有属性访问的偏移量。</div>
+
+<h3>8.2.2 getBindValue(): 属性绑定瓶颈</h3>
+
+<pre><code>// main.php:38-47 — 当前仅 2 个分支
+private function getBindValue(string $bindKey): string
+{
+    if ($bindKey === 'expression') {
+        return $this->component->expression;
+    }
+    if ($bindKey === 'display') {
+        return $this->component->display;
+    }
+    return '';
+}</code></pre>
+
+<p>这是 <strong>D4 技术债务</strong>（§3.3）的核心位置。每增加一个 <code>:bind="prop"</code> 属性，开发者必须手动在此函数中添加 <code>if</code> 分支。M2 解决方案：SFC 编译器在生成布局代码时，同时生成完整的绑定映射表（编译期可知所有 <code>:bind</code> 目标）。</p>
+
+<div class="note"><strong>为何不能用 <code>$this->component->$bindKey</code></strong>？AOT 编译器不支持变量属性访问（§4.1 约束清单第 3 项）。所有属性访问必须在编译期确定——这正是显式 if/else 模式的根本原因。</div>
+
+<h3>8.2.3 renderTextElement(): 运行时智能排版</h3>
+
+<p>这个方法（L50-94）展示了两个编译器<strong>无法在编译期完成的</strong>运行时优化，必须在运行时处理：</p>
+
+<h4>动态字号缩减（L72-78）</h4>
+<pre><code>// 长数字自动缩小字号，防止溢出显示区域
+$textLen = strlen($text);
+if ($textLen > 12 && $fontSize > 24) {
+    $fontSize = 24;    // 32px → 24px
+}
+if ($textLen > 16 && $fontSize > 18) {
+    $fontSize = 18;    // 进一步缩小
+}</code></pre>
+
+<p>这是由于计算器的 <code>display</code> 值在编译期未知（取决于用户输入），因此无法预计算字号。v3 的字体大小策略相比 v2 增加了对极端长数字（>16 位）的处理。</p>
+
+<h4>右对齐坐标计算（L81-91）</h4>
+<pre><code>// 基于容器宽度和文本长度估算像素宽度，动态调整 X 坐标
+if ($align === 'right' && isset($el['containerW'])) {
+    $containerW = $el['containerW'];          // 320px 容器宽
+    $containerX = $el['containerX'] ?? 0;     // 4px 容器X偏移
+    $charWidth  = (int)($fontSize * 0.6);     // 估算(GDI 等宽近似)
+    $textWidth  = $textLen * $charWidth;
+    $rightEdge  = $containerX + $containerW;  // 右边缘 = 4 + 320 = 324
+    $x = $rightEdge - 12 - $textWidth;        // 留12px右边距
+    if ($x < $containerX + 4) {              // 最小值保护
+        $x = $containerX + 4;
+    }
+}</code></pre>
+
+<div class="info"><strong>精度说明</strong>：GDI <code>TextOutA</code> 使用系统默认字体，<code>fontSize*0.6</code> 是平均字符宽度的经验值。对于精确测量应使用 <code>GetTextExtentPoint32</code>。此近似值对计算器场景（等宽数字为主）足够准确。</div>
+
+<h3>8.2.4 render(): 双重遍历绘制循环</h3>
+
+<pre><code>// main.php:99-131 — 每帧执行
+public function render(): void
+{
+    $hdc = vue_begin_paint($this->hWnd);     // 获取内存DC
+    $layout = getLayout();                     // 读取编译期生成数据
+    $elements = $layout['elements'];           // 4个元素
+    $buttons  = $layout['buttons'];            // 18个按钮
+
+    // 第一遍: 渲染背景元素 (rect + text)
+    foreach ($elements as $el) {
+        if ($el['type'] === 'rect') {
+            vue_fill_rect($hdc, ...);          // C++ GDI调用
+        } elseif ($el['type'] === 'text') {
+            $this->renderTextElement($hdc, $el); // PHP端处理
+        }
+    }
+
+    // 第二遍: 渲染按钮 (背景+边框+居中文字)
+    foreach ($buttons as $btn) {
+        vue_draw_button($hdc, ...);            // C++: 背景+边框
+        // 标签居中计算 (PHP端)
+        $labelX = $btn['x'] + (int)(($btn['w'] - $labelLen * $labelCharW) / 2);
+        $labelY = $btn['y'] + (int)(($btn['h'] - $labelFontSize) / 2);
+        vue_draw_text($hdc, $labelX, $labelY, ...); // C++: 文字
+    }
+
+    vue_end_paint($this->hWnd, $hdc);          // BitBlt 到屏幕
+}</code></pre>
+
+<p><strong>每帧 GDI 调用统计</strong>：<code>vue_begin_paint</code> (1次) + <code>vue_fill_rect</code> (2次) + <code>vue_draw_text</code> (2+18=20次) + <code>vue_draw_button</code> (18次) + <code>vue_end_paint</code> (1次) = <strong>42 次跨 PHP↔C++ 调用</strong>。</p>
+
+<h2>8.3 CalcApp: 消息循环与事件分发</h2>
+
+<h3>8.3.1 窗口生命周期</h3>
+
+<pre><code>// main() 入口 → CalcApp 生命周期 (main.php:265-290)
+function main(): int {
+    ReactiveComponent::initShared(10240);  // 初始化共享内存
+    $calc = new Calculator('MainCalculator'); // 创建组件
+    $app = new CalcApp($calc);               // 创建控制器
+    if (!$app->initWindow()) return 1;       // 创建Win32窗口
+    $app->run();                              // 进入消息循环
+    return 0;                                 // 正常退出
+}</code></pre>
+
+<p><strong>initShared(10240)</strong> 分配 10KB 共享内存并创建 ChangeQueue 实例。当前 ChangeQueue (<code>src/ChangeQueue.php</code>, 56行环形缓冲) 未被活跃使用（D9 技术债务），仅通过 <code>initShared()</code> 创建了实例对象。</p>
+
+<h3>8.3.2 消息泵: 双循环架构</h3>
+
+<pre><code>// main.php:172-227 — 消息泵核心
+public function run(): void {
+    $this->renderer->render(); // 首帧
+    while ($running) {
+        // ===== 内循环: 排空待处理消息 =====
+        while (true) {
+            $msg = vue_peek_message();       // C++: PeekMessage + GetMessage
+            if (count($msg) == 0) break;     // 无消息 → 退出内循环
+
+            $msgType = $msg[1] ?? 0;         // msg[1] = UINT message
+            if ($msgType == WM_LBUTTONDOWN) {
+                // 解析鼠标坐标 (lParam 封包)
+                $lParam = $msg[3] ?? 0;      // msg[3] = LPARAM
+                $mx = $lParam & 0xFFFF;      // LOWORD
+                $my = ($lParam >> 16) & 0xFFFF; // HIWORD
+                $this->handleClick($mx, $my);
+            }
+            if ($msgType == WM_QUIT) {
+                $running = false;
+                break;
+            }
+        }
+
+        // ===== 外循环: 后备退出检查 =====
+        if (vue_quit_requested()) $running = false;
+
+        // ===== 脏标记驱动重绘 =====
+        if ($this->calc->dirty) {
+            $this->renderer->render();       // 仅在需要时重绘
+            $this->calc->dirty = false;      // 清除脏标记
+        }
+
+        usleep(16000); // ~60 FPS 帧率控制
+    }
+}</code></pre>
+
+<div class="warn"><strong>微妙点</strong>：<code>vue_quit_requested()</code> 不能替代 <code>WM_QUIT</code> 检查——两者互补。WM_QUIT 由窗口关闭消息触发（消息队列内），<code>vue_quit_requested()</code> 读取 C++ 静态变量 <code>g_quitRequested</code>（窗口销毁时设置）。外层 <code>if</code> 是后备机制，防止 WM_QUIT 因某种原因未被投递。</div>
+
+<h3>8.3.3 命中测试: 遍历按钮数组</h3>
+
+<pre><code>// main.php:230-241 — O(n) 线性命中测试
+private function handleClick(int $x, int $y): void {
+    $buttons = getLayout()['buttons'];      // 18个按钮
+    foreach ($buttons as $btn) {
+        if ($x >= $btn['x'] && $x < $btn['x'] + $btn['w'] &&
+            $y >= $btn['y'] && $y < $btn['y'] + $btn['h']) {
+            $this->dispatchClick($btn);     // 命中 → 分发
+            return;                          // 首次命中即停止
+        }
+    }
+}</code></pre>
+
+<p>18 个按钮的线性搜索在现代 CPU 上约 <strong>~100ns</strong>，完全无性能问题。若未来按钮数量增长到 100+ 可考虑空间哈希（grid cell 分桶），但当前方案简单可靠。</p>
+
+<h3>8.3.4 显式事件路由表</h3>
+
+<pre><code>// main.php:243-258 — D5 技术债务核心
+private function dispatchClick(array $btn): void {
+    $handler = $btn['handler'];             // 来自编译期 @click 解析
+    $arg     = $btn['arg'];
+
+    if ($handler === 'reset') {
+        $this->calc->reset();
+    } elseif ($handler === 'backspace') {
+        $this->calc->backspace();
+    } elseif ($handler === 'calculate') {
+        $this->calc->calculate();
+    } elseif ($handler === 'handleButton') {
+        $this->calc->handleButton($arg);    // ← 带参数的方法
+    }
+}</code></pre>
+
+<table>
+<tr><th>Handler</th><th>出现次数</th><th>被调方法</th><th>参数</th></tr>
+<tr><td><code>reset</code></td><td>1 (C 按钮)</td><td><code>Calculator::reset()</code></td><td>—</td></tr>
+<tr><td><code>backspace</code></td><td>1 (← 按钮)</td><td><code>Calculator::backspace()</code></td><td>—</td></tr>
+<tr><td><code>calculate</code></td><td>1 (= 按钮)</td><td><code>Calculator::calculate()</code></td><td>—</td></tr>
+<tr><td><code>handleButton</code></td><td>15 (数字+运算符)</td><td><code>Calculator::handleButton($arg)</code></td><td>'0'-'9', '+','-','*','/','.'</td></tr>
+</table>
+
+<div class="note"><strong>M2 自动生成策略</strong>：编译器已掌握所有 <code>@click</code> 信息（在模板解析阶段提取），可以直接生成 <code>dispatchClick()</code> 的全部 if/else 分支。生成的代码可放在 <code>Calculator.gen.php</code> 中作为一个 trait 或基类方法。</div>
+
+<h2>8.4 运行时性能剖析</h2>
+
+<h3>8.4.1 帧率控制</h3>
+
+<pre><code>usleep(16000);  // 16ms → 理论最高 ~62.5 FPS</code></pre>
+
+<p>实际帧率受以下因素影响：</p>
+<ul>
+  <li><strong>空闲帧</strong>（无用户操作）：约 60 FPS，每帧仅检测 <code>vue_peek_message</code> 和 <code>vue_quit_requested</code></li>
+  <li><strong>脏帧</strong>（状态变更后）：约 55-60 FPS，增加 42 次 PHP→C++ GDI 调用</li>
+  <li><strong>连续输入帧</strong>（快速点击）：每帧需额外执行 handleClick → dispatchClick → 业务逻辑</li>
+</ul>
+
+<h3>8.4.2 每帧操作开销估算</h3>
+
+<table>
+<tr><th>阶段</th><th>操作</th><th>PHP↔C++ 往返</th><th>估算开销</th></tr>
+<tr><td>消息检测（空闲）</td><td><code>vue_peek_message()</code> + <code>vue_quit_requested()</code></td><td>1-2 次</td><td>~10µs</td></tr>
+<tr><td>消息处理（有点击）</td><td>命中测试 (PHP端) + 业务逻辑 (PHP端)</td><td>0 次</td><td>~1µs</td></tr>
+<tr><td>脏帧渲染</td><td>42 次 GDI 调用 + 双缓冲 BitBlt</td><td>42 次</td><td>~200-500µs</td></tr>
+<tr><td>帧间等待</td><td><code>usleep(16000)</code></td><td>—</td><td>16,000µs</td></tr>
+</table>
+
+<p><strong>关键结论</strong>：GDI 渲染开销 (~500µs) 远小于帧间等待 (16ms)，约占总帧预算的 3%。这意味着即使将渲染元素数乘以 10 倍（220 个元素），仍能在 60 FPS 目标内完成。这也是 P7（增量渲染）被推迟到「远期」的根本原因。</p>
+
+<h3>8.4.3 PHP↔C++ 调用开销</h3>
+
+<p>每帧 42 次 PHP↔C++ 调用通过 phpx 的类型转换层（详见 §4.7）。每次调用涉及：PHP 参数 → Variant 转换 → C++ 执行 → 返回值 Variant 装箱。对于简单的 GDI 原语（FillRect, TextOut），转换开销占比约 60-70%，实际 GDI 调用仅 30-40%。</p>
+
+<div class="info"><strong>优化方向</strong>：如果未来渲染成为瓶颈，可将 <code>render()</code> 中多次 GDI 调用合并为单次 C++ 批量调用（传递整个 elements/buttons 数组），减少 PHP↔C++ 往返次数。但当前场景不需要。</div>
+
+<h2>8.5 运行时与生成代码的边界划分</h2>
+
+<p>当前 main.php 中包含了许多 <strong>原则上可以由编译器自动生成</strong>的代码。以下是 M2 完成后的目标边界：</p>
+
+<table>
+<tr><th>代码</th><th>当前位置</th><th>本质</th><th>M2 后位置</th></tr>
+<tr>
+  <td><code>getBindValue()</code> (2分支)</td>
+  <td>main.php:38-47</td>
+  <td>:bind 属性映射（编译期可知）</td>
+  <td class="wip">→ 编译器生成，放入 .gen.php</td>
+</tr>
+<tr>
+  <td><code>dispatchClick()</code> (4分支)</td>
+  <td>main.php:243-258</td>
+  <td>@click 方法路由（编译期可知）</td>
+  <td class="wip">→ 编译器生成，放入 .gen.php</td>
+</tr>
+<tr>
+  <td><code>render()</code> 双重遍历</td>
+  <td>main.php:99-131</td>
+  <td>遍历 LAYOUT 数据 → GDI 调用</td>
+  <td>保留在 main.php（通用逻辑）</td>
+</tr>
+<tr>
+  <td><code>renderTextElement()</code></td>
+  <td>main.php:50-94</td>
+  <td>运行时动态字号 + 对齐</td>
+  <td>保留在 main.php（运行时依赖）</td>
+</tr>
+<tr>
+  <td><code>handleClick()</code> 命中测试</td>
+  <td>main.php:230-241</td>
+  <td>遍历 buttons 数组</td>
+  <td>保留在 main.php（通用逻辑）</td>
+</tr>
+<tr>
+  <td><code>$this->dirty = true</code> (7处)</td>
+  <td>Calculator.vue:60-200</td>
+  <td>手动脏标记（编译器可分析）</td>
+  <td class="wip">→ 编译器自动插入</td>
+</tr>
+<tr>
+  <td>窗口创建 + 消息循环</td>
+  <td>main.php:152-227</td>
+  <td>平台相关胶水代码</td>
+  <td>保留在 main.php</td>
+</tr>
+</table>
+
+<div class="success"><strong>M2 完成后预期</strong>：main.php 将从 291 行缩减到 ~200 行（去除硬编码的 getBindValue/dispatchClick），Calculator.vue 从 215 行缩减到 ~200 行（去除手动 dirty）。新增的自动生成代码放置在 .gen.php 中，开发者无需手动维护。</div>
+
+<h2>8.6 AOT 兼容设计模式目录</h2>
+
+<p>以下 5 个模式从 main.php 实践中提炼，适用于所有 AOT 编译的 PHP 桌面应用：</p>
+
+<table>
+<tr><th>#</th><th>模式名</th><th>位置</th><th>应用场景</th><th>反模式 (AOT 不支持)</th></tr>
+<tr>
+  <td>1</td>
+  <td><strong>显式属性映射</strong></td>
+  <td><code>getBindValue()</code> (L38-47)</td>
+  <td>需要从字符串 key 访问对象属性</td>
+  <td><code>$obj->$key</code> (变量属性访问)</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><strong>显式方法路由</strong></td>
+  <td><code>dispatchClick()</code> (L243-258)</td>
+  <td>需要从字符串 name 调用对象方法</td>
+  <td><code>$obj->$method()</code> (变量方法调用)</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><strong>编译期数据分离</strong></td>
+  <td><code>getLayout()</code> (在 .gen.php)</td>
+  <td>UI 布局数据与运行时逻辑分离</td>
+  <td><code>const LAYOUT = [...]</code> (const 不支持复杂数组)</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td><strong>手动脏标记传播</strong></td>
+  <td><code>$this->dirty = true</code> (7处)</td>
+  <td>状态变更后通知渲染层</td>
+  <td><code>__set()</code> 自动 dirty (魔术方法不可用)</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td><strong>防御性 try/catch</strong></td>
+  <td><code>handleClick()</code> + <code>render()</code> 包裹</td>
+  <td>AOT 异常栈可能不完整，需要显式捕获</td>
+  <td>依赖框架全局异常处理器</td>
+</tr>
+</table>
+
+<div class="warn">
+  <strong>模式选择原则</strong>：当面临「写更多显式代码」vs「依赖 PHP 动态特性」的选择时，在 AOT 环境中<strong>总是选择前者</strong>。v2 的经验证明：显式 if/else 虽然冗长，但在 AOT 下 100% 可靠；而 <code>__get/__set/__call</code> 等魔术方法虽然在标准 PHP 中优雅，却在 AOT 中根本不可用。
+</div>
+
+<h2>8.7 main.php 的 M2 演进路线</h2>
+
+<p>基于以上分析，main.php 在 M2 的演进方向明确：</p>
+
+<ol>
+  <li><strong>getBindValue() 自动生成</strong>：SFC 编译器扫描模板中所有 <code>:bind="prop"</code> → 生成完整映射表（含类型声明）→ 放入 .gen.php → main.php 删除此方法</li>
+  <li><strong>dispatchClick() 自动生成</strong>：SFC 编译器扫描模板中所有 <code>@click="handler"</code> → 生成完整路由表 → 放入 .gen.php → main.php 删除该方法</li>
+  <li><strong>try/catch 保持不变</strong>：异常处理逻辑属于运行时关注点，不适合编译器生成</li>
+  <li><strong>render() 模式保留</strong>：双重遍历模式是通用渲染管道，保持不变。仅 <code>renderTextElement()</code> 中若出现 per-property 特殊处理，才需要编译器参与</li>
+  <li><strong>initShared() 评估</strong>：若 ChangeQueue 在 M2 仍未启用，考虑移除或降级为简单的 bool 标志</li>
+</ol>
+
+<div class="success">
+  <strong>M2 完成后 main.php 精简预期</strong>：从 291 行 (当前) → ~200 行 (M2 后)，减少的 ~90 行由编译器自动生成并放入 .gen.php。main.php 将退化为纯粹的「平台胶水层」——窗口创建、消息泵、渲染循环——而所有应用特定的绑定/路由逻辑均由编译器维护。
 </div>
 
 </div>
