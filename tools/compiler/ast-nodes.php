@@ -1,0 +1,152 @@
+<?php
+/**
+ * AST Node classes for VueCalc SFC Template
+ * 
+ * Each node carries a line number for error reporting.
+ * Used by the recursive descent parser (template-parser.php).
+ */
+
+abstract class TemplateNode
+{
+    /** Source file line number (1-based) */
+    public int $line;
+
+    public function __construct(int $line = 0)
+    {
+        $this->line = $line;
+    }
+}
+
+class AppNode extends TemplateNode
+{
+    public string $title;
+    public int $width;
+    public int $height;
+
+    /** @var TemplateNode[] */
+    public array $children = [];
+
+    public function __construct(string $title, int $width, int $height, int $line = 0)
+    {
+        parent::__construct($line);
+        $this->title  = $title;
+        $this->width  = $width;
+        $this->height = $height;
+    }
+}
+
+class RectNode extends TemplateNode
+{
+    public int $x;
+    public int $y;
+    public int $w;
+    public int $h;
+    public string $class;
+
+    public function __construct(int $x, int $y, int $w, int $h, string $class, int $line = 0)
+    {
+        parent::__construct($line);
+        $this->x     = $x;
+        $this->y     = $y;
+        $this->w     = $w;
+        $this->h     = $h;
+        $this->class = $class;
+    }
+}
+
+class TextNode extends TemplateNode
+{
+    public int $x;
+    public int $y;
+    public string $bind;       // :bind="prop"
+    public string $class;
+    public string $align;      // left|right
+    public int $containerW;
+    public int $containerX;
+    public bool $hasContainer;
+
+    public function __construct(
+        int $x, int $y, string $bind, string $class,
+        string $align = 'left',
+        int $containerW = 0, int $containerX = 0,
+        int $line = 0
+    ) {
+        parent::__construct($line);
+        $this->x           = $x;
+        $this->y           = $y;
+        $this->bind        = $bind;
+        $this->class       = $class;
+        $this->align       = $align;
+        $this->containerW  = $containerW;
+        $this->containerX  = $containerX;
+        $this->hasContainer = ($containerW > 0);
+    }
+}
+
+class GridNode extends TemplateNode
+{
+    public int $x;
+    public int $y;
+    public int $cols;
+    public int $rows;
+    public int $cellW;
+    public int $cellH;
+    public int $margin;
+
+    /** @var BtnNode[] */
+    public array $buttons = [];
+
+    public function __construct(
+        int $x, int $y,
+        int $cols, int $rows, int $cellW, int $cellH, int $margin,
+        int $line = 0
+    ) {
+        parent::__construct($line);
+        $this->x      = $x;
+        $this->y      = $y;
+        $this->cols   = $cols;
+        $this->rows   = $rows;
+        $this->cellW  = $cellW;
+        $this->cellH  = $cellH;
+        $this->margin = $margin;
+    }
+}
+
+class BtnNode extends TemplateNode
+{
+    public int $row;
+    public int $col;
+    public string $label;
+    public string $class;
+    public string $handler;   // @click handler method name
+    public ?string $arg;      // @click argument (null if none)
+
+    public function __construct(
+        int $row, int $col, string $label, string $class,
+        string $handler, ?string $arg = null,
+        int $line = 0
+    ) {
+        parent::__construct($line);
+        $this->row     = $row;
+        $this->col     = $col;
+        $this->label   = $label;
+        $this->class   = $class;
+        $this->handler = $handler;
+        $this->arg     = $arg;
+    }
+}
+
+/**
+ * Represents an unknown or unsupported tag.
+ * Parser collects these for error reporting rather than silently ignoring.
+ */
+class UnknownNode extends TemplateNode
+{
+    public string $tagName;
+
+    public function __construct(string $tagName, int $line = 0)
+    {
+        parent::__construct($line);
+        $this->tagName = $tagName;
+    }
+}

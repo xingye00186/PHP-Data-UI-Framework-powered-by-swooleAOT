@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VueCalc 迭代归档：M1 编译器健壮化</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --text: #e0e0e0;
+    --accent: #e94560;
+    --accent2: #ff9500;
+    --accent3: #007aff;
+    --code-bg: #0d1117;
+    --border: #2a2a4a;
+    --green: #4caf84;
+    --blue: #5b9bd5;
+    --yellow: #ffc107;
+    --purple: #a855f7;
+    --done: #22c55e;
+    --wip: #f59e0b;
+    --missing: #ef4444;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    line-height: 1.8;
+    font-size: 16px;
+  }
+  .container { max-width: 1020px; margin:0 auto; padding:40px 24px; }
+
+  .cover {
+    text-align:center; padding:80px 20px 60px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    border-radius:16px; margin-bottom:40px;
+    border:1px solid var(--border); position:relative;
+  }
+  .cover h1 { font-size:2.8em; color:#fff; margin-bottom:8px; }
+  .cover .subtitle { font-size:1.2em; color:var(--accent); margin-bottom:20px; }
+  .cover .meta { color:#888; font-size:0.9em; }
+  .version-badge {
+    position:absolute; top:16px; right:16px;
+    background:var(--purple); color:#fff; padding:6px 16px;
+    border-radius:20px; font-weight:bold; font-size:0.85em;
+  }
+
+  h1 { font-size:2em; color:#fff; margin:48px 0 20px; border-left:4px solid var(--accent); padding-left:16px; }
+  h2 { font-size:1.5em; color:var(--accent2); margin:36px 0 16px; }
+  h3 { font-size:1.2em; color:var(--accent3); margin:24px 0 12px; }
+  h4 { font-size:1.05em; color:var(--purple); margin:20px 0 8px; }
+  p { margin:12px 0; }
+  ul, ol { margin:12px 0 12px 24px; }
+  li { margin:6px 0; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px; padding:16px 20px; overflow-x:auto; margin:16px 0; font-size:0.88em; line-height:1.6; }
+  code { font-family:"Cascadia Code","Fira Code","Consolas",monospace; font-size:0.92em; }
+  p code, li code { background:var(--surface2); padding:2px 6px; border-radius:4px; }
+
+  table { width:100%; border-collapse:collapse; margin:20px 0; }
+  th { background:var(--surface2); padding:10px 14px; text-align:left; font-weight:600; }
+  td { padding:10px 14px; border-bottom:1px solid var(--border); vertical-align:top; }
+  tr:hover td { background:rgba(255,255,255,0.03); }
+
+  .done { color:var(--done); font-weight:bold; }
+  .wip { color:var(--wip); font-weight:bold; }
+  .missing { color:var(--missing); font-weight:bold; }
+  .done-bg { background:rgba(34,197,94,0.12); }
+  .wip-bg { background:rgba(245,158,11,0.12); }
+  .missing-bg { background:rgba(239,68,68,0.12); }
+
+  .phase-card {
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:28px; margin:24px 0;
+  }
+  .phase-card .phase-header {
+    display:flex; align-items:center; gap:16px; margin-bottom:16px;
+  }
+  .phase-num {
+    width:56px; height:56px; border-radius:12px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:1.5em; font-weight:bold; color:#fff; flex-shrink:0;
+  }
+  .phase-num.done-num { background:var(--done); }
+
+  .progress-bar {
+    height:8px; background:var(--border); border-radius:4px; margin:12px 0; overflow:hidden;
+  }
+  .progress-fill { height:100%; border-radius:4px; transition:width 0.3s; }
+  .progress-done { background:var(--done); }
+  .progress-wip { background:var(--wip); }
+
+  .card {
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:24px; margin:20px 0;
+  }
+  .note {
+    background:var(--surface); border-left:4px solid var(--yellow);
+    padding:12px 20px; margin:16px 0; border-radius:0 8px 8px 0;
+  }
+  .warn {
+    background:var(--surface); border-left:4px solid var(--accent);
+    padding:12px 20px; margin:16px 0; border-radius:0 8px 8px 0;
+  }
+  .info {
+    background:var(--surface); border-left:4px solid var(--accent3);
+    padding:12px 20px; margin:16px 0; border-radius:0 8px 8px 0;
+  }
+  .success {
+    background:var(--surface); border-left:4px solid var(--done);
+    padding:12px 20px; margin:16px 0; border-radius:0 8px 8px 0;
+  }
+
+  .dataflow {
+    display:flex; align-items:center; justify-content:center; flex-wrap:wrap;
+    gap:12px; margin:20px 0; padding:20px;
+    background:var(--code-bg); border-radius:12px; font-size:0.85em;
+  }
+  .df-node {
+    background:var(--surface2); border:1px solid var(--border); border-radius:8px;
+    padding:10px 16px; text-align:center; min-width:100px;
+  }
+  .df-arrow { font-size:1.4em; color:#666; }
+
+  @media (max-width:640px) {
+    .container { padding:16px; }
+    .cover h1 { font-size:1.8em; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ===== 封面 ===== -->
+<div class="cover">
+  <div class="version-badge">M1 · 已完成</div>
+  <h1>VueCalc M1 迭代归档</h1>
+  <div class="subtitle">SFC 编译器健壮化 — 正则解析器 → 递归下降 AST 解析器</div>
+  <div class="meta">迭代周期: 2026-05-11 · 依据: VueCalc技术规划文档_v3.html §5.3</div>
+</div>
+
+<!-- ===== 总览 ===== -->
+<div class="card" style="text-align:center">
+  <h3 style="margin-top:0; color:var(--accent2)">M1 里程碑概览</h3>
+  <table style="max-width:600px;margin:16px auto">
+  <tr><td style="text-align:right;color:#888">目标</td><td>夯实编译器基础，不新增业务功能，提高可靠性</td></tr>
+  <tr><td style="text-align:right;color:#888">新增文件</td><td>5 个 (共 ~1,400 行)</td></tr>
+  <tr><td style="text-align:right;color:#888">改动文件</td><td>1 个 (完全重写 tools/sfc-compiler.php)</td></tr>
+  <tr><td style="text-align:right;color:#888">单元测试</td><td>25 项, 100% 通过</td></tr>
+  <tr><td style="text-align:right;color:#888">AOT 校验</td><td class="done">0 错误, 0 警告</td></tr>
+  <tr><td style="text-align:right;color:#888">回归</td><td class="done">生成输出与原版完全一致，AOT PHP→C++ 转换零错误</td></tr>
+  </table>
+</div>
+
+<!-- ===== 1. 背景 ===== -->
+<h1>一、迭代背景</h1>
+
+<p>v3 设计规划文档（<code>VueCalc技术规划文档_v3.html</code> §5.3）将 M1 定义为最高优先级里程碑——「SFC 编译器健壮化」。其核心问题：</p>
+
+<div class="warn">
+  <strong>技术债务 D1</strong>（严重度：高）：<code>tools/sfc-compiler.php:111-227</code> 中模板解析完全基于正则表达式，标签名硬编码在 <code>app|rect|text|grid|btn</code> 中，无 AST 中间表示，无行号跟踪，无错误恢复。
+</div>
+
+<p>M1 的 5 项目标：</p>
+<ol>
+  <li><strong>解析器升级</strong>：纯正则 → 递归下降 parser，输出 AST 中间表示</li>
+  <li><strong>AOT 兼容性校验</strong>：编译器输出前自动检测 AOT 约束违规</li>
+  <li><strong>错误报告</strong>：解析失败时输出行号和描述性错误信息</li>
+  <li><strong>CSS 映射表正式化</strong>：建立结构化 <code>[css-prop → gdi-param]</code> 映射</li>
+  <li><strong>单元测试覆盖</strong>：为 sfc-compiler 各步骤增加测试用例</li>
+</ol>
+
+<!-- ===== 2. 产出文件 ===== -->
+<h1>二、产出文件清单</h1>
+
+<h2>2.1 新建文件（5 个）</h2>
+
+<table>
+<tr><th>文件</th><th>行数</th><th>类型</th><th>核心职责</th></tr>
+<tr>
+  <td><code>tools/compiler/ast-nodes.php</code></td>
+  <td>140</td>
+  <td>类定义</td>
+  <td>7 个 AST 节点类: <code>TemplateNode</code>(抽象基类), <code>AppNode</code>, <code>RectNode</code>, <code>TextNode</code>, <code>GridNode</code>, <code>BtnNode</code>, <code>UnknownNode</code>。每节点含 <code>$line</code> 用于错误定位</td>
+</tr>
+<tr>
+  <td><code>tools/compiler/css-mappings.php</code></td>
+  <td>185</td>
+  <td>工具类</td>
+  <td><code>CssMappings</code> 静态类: 8 属性映射表 (PROPERTY_MAP)、<code>hexToBgr()</code> (含 #RGB 简写)、<code>borderColor()</code>、<code>parseStyleBlock()</code>、<code>parseHexColor()</code> 等 5 个解析器</td>
+</tr>
+<tr>
+  <td><code>tools/compiler/template-parser.php</code></td>
+  <td>680</td>
+  <td>核心引擎</td>
+  <td><code>TemplateParser</code> 类: tokenize → parse → lowerToLayout 三阶段管道。含 <code>Token</code>, <code>TemplateParseError</code> 辅助类。8 种错误检测、AST JSON dump、坐标预计算</td>
+</tr>
+<tr>
+  <td><code>tools/compiler/aot-validator.php</code></td>
+  <td>125</td>
+  <td>校验器</td>
+  <td><code>AotValidator</code> 类: 5 条 AOT 规则 (文件名点号、const 数组、变量属性访问、变量方法调用、PHP8 函数)，区分 error/fatal 与 warning/non-fatal</td>
+</tr>
+<tr>
+  <td><code>tests/sfc-compiler-test.php</code></td>
+  <td>235</td>
+  <td>测试</td>
+  <td>25 项测试分 5 组: CSS映射(9)、Parser(7)、AST→Layout(1)、AOT校验(7)、集成(1)</td>
+</tr>
+</table>
+
+<h2>2.2 改动文件</h2>
+
+<table>
+<tr><th>文件</th><th>改动类型</th><th>变更说明</th></tr>
+<tr>
+  <td><code>tools/sfc-compiler.php</code></td>
+  <td>完全重写</td>
+  <td>303 行 → 210 行。引入 4 个 compiler 模块，流程从「正则直接匹配→数组」升级为「tokenize→parse→AST→lower→AOT校验→生成」</td>
+</tr>
+<tr><td colspan="3" style="text-align:center;color:#888"><em>另外: src/compiler/ 目录在实施中间阶段创建，后因 AOT 编译器会拾取 src/ 下所有文件，最终移至 tools/compiler/。以下文件为中间产物已删除：无。</em></td></tr>
+</table>
+
+<h2>2.3 辅助文件</h2>
+<table>
+<tr><th>文件</th><th>用途</th></tr>
+<tr><td><code>tests/verify-layout.php</code></td><td>快速回归脚本：加载生成的 layout，断言 4 elements + 18 buttons 坐标/属性正确</td></tr>
+</table>
+
+<!-- ===== 3. 架构变化 ===== -->
+<h1>三、架构演变</h1>
+
+<h2>3.1 编译管道 v2 → v3</h2>
+
+<div class="dataflow">
+  <div class="df-node" style="border-color:var(--accent);min-width:110px">
+    <b>.vue SFC</b>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--missing);min-width:140px">
+    <b>v2: 正则直出</b>
+    <div style="font-size:0.7em;color:#aaa">preg_match_all<br>→ arrays</div>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--purple);min-width:110px">
+    <b>.gen.php</b>
+  </div>
+</div>
+
+<p style="text-align:center;color:#888;margin:8px 0 24px 0">▼ M1 升级为 ▼</p>
+
+<div class="dataflow">
+  <div class="df-node" style="border-color:var(--accent);min-width:110px">
+    <b>.vue SFC</b>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--accent3);min-width:100px">
+    <b>Lexer</b>
+    <div style="font-size:0.7em;color:#aaa">Token[]</div>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--accent3);min-width:100px">
+    <b>Parser</b>
+    <div style="font-size:0.7em;color:#aaa">AST</div>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--accent2);min-width:100px">
+    <b>Lower</b>
+    <div style="font-size:0.7em;color:#aaa">Layout[]</div>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--green);min-width:90px">
+    <b>Validate</b>
+    <div style="font-size:0.7em;color:#aaa">AOT</div>
+  </div>
+  <div class="df-arrow">→</div>
+  <div class="df-node" style="border-color:var(--purple);min-width:110px">
+    <b>.gen.php ×2</b>
+  </div>
+</div>
+
+<h2>3.2 目录结构变化</h2>
+
+<pre><code>┌─ tools/                          (编译器工具 — 标准PHP CLI, 不进入AOT)
+│  ├─ sfc-compiler.php             [重写] 主入口, 新6步管道
+│  └─ compiler/                    [新增] M1 编译器模块
+│     ├─ ast-nodes.php             7 个AST节点类
+│     ├─ css-mappings.php          CSS→GDI映射表 (8属性)
+│     ├─ template-parser.php       递归下降解析器 (680行)
+│     └─ aot-validator.php         5 条AOT规则校验
+│
+├─ src/                            (应用源码 — 进入AOT编译)
+│  ├─ Calculator.vue               [不变] SFC 源文件
+│  ├─ Calculator.gen.php           [生成] 组件类
+│  ├─ CalculatorLayout_gen.php     [生成] 布局数据
+│  ├─ ReactiveComponent.php        [不变]
+│  └─ ChangeQueue.php              [不变]
+│
+└─ tests/                          [新增]
+   ├─ sfc-compiler-test.php        25项单元测试
+   └─ verify-layout.php            快速回归验证</code></pre>
+
+<div class="note"><strong>关键决策</strong>：编译器模块最初按 v3 文档计划放在 <code>src/compiler/</code>，但发现 AOT 编译器会拾取 <code>src/</code> 下所有文件并尝试编译（包括 <code>require_once</code> 等顶层语句，违反"AOT 要求所有代码在函数内"约束）。实际落地为 <code>tools/compiler/</code>——该目录不在 project.yml 的 sources 列表中，永远不会被 AOT 触碰。</div>
+
+<!-- ===== 4. 关键技术细节 ===== -->
+<h1>四、关键技术细节</h1>
+
+<h2>4.1 递归下降 Parser 设计</h2>
+
+<p><code>TemplateParser</code> 采用经典三阶段架构：</p>
+
+<h3>Phase 1: Tokenize</h3>
+<ul>
+  <li>逐字符扫描模板字符串，跟踪行号</li>
+  <li>识别 6 种 token 类型: <code>TOK_TAG_OPEN</code>, <code>TOK_TAG_CLOSE</code>, <code>TOK_TAG_SELF</code>, <code>TOK_TEXT</code>, <code>TOK_COMMENT</code>, <code>TOK_EOF</code></li>
+  <li>注释 (<code>&lt;!-- ... --&gt;</code>) 被正确跳过，不影响解析</li>
+</ul>
+
+<h3>Phase 2: Parse</h3>
+<pre><code>parseDocument()          // 入口: 期望 &lt;app&gt;
+  → parseApp()           // 解析 &lt;app ...&gt;...&lt;/app&gt;
+    → parseElement()     // 分发: rect | text | grid | unknown
+      → parseRect()      // &lt;rect x=... class=... /&gt;
+      → parseText()      // &lt;text :bind=... class=... /&gt;
+      → parseGrid()      // &lt;grid ...&gt;
+        → parseBtn()     //   &lt;btn row=... col=... @click=... /&gt;
+      → UnknownNode      // 未知标签: 报告 → 继续解析</code></pre>
+
+<h3>Phase 3: Lower to Layout</h3>
+<p><code>lowerToLayout(AppNode, classStyles)</code> 遍历 AST，应用 CSS 样式，预计算 Grid 按钮像素坐标，输出 <code>['elements'=>[...], 'buttons'=>[...]]</code> 数组——格式与原版完全兼容。</p>
+
+<h2>4.2 错误报告能力</h2>
+
+<p>新增 8 种编译时错误检测，全部带行号：</p>
+
+<table>
+<tr><th>错误</th><th>触发条件</th><th>严重度</th></tr>
+<tr><td>Empty template</td><td>模板中无 <code>&lt;app&gt;</code> 根元素</td><td>Fatal</td></tr>
+<tr><td>Expected &lt;app&gt;</td><td>根标签不是 <code>&lt;app&gt;</code></td><td>Fatal</td></tr>
+<tr><td>Unclosed &lt;app&gt;</td><td>缺少 <code>&lt;/app&gt;</code></td><td>Fatal</td></tr>
+<tr><td>Unclosed &lt;grid&gt;</td><td>缺少 <code>&lt;/grid&gt;</code></td><td>Fatal</td></tr>
+<tr><td>&lt;btn&gt; outside &lt;grid&gt;</td><td><code>&lt;btn&gt;</code> 直接在 <code>&lt;app&gt;</code> 下</td><td>Error</td></tr>
+<tr><td>Unknown element</td><td>不支持的标签名</td><td>Warning</td></tr>
+<tr><td>Missing class</td><td><code>&lt;rect&gt;</code>/<code>&lt;text&gt;</code> 无 class 属性</td><td>Warning</td></tr>
+<tr><td>No :bind</td><td><code>&lt;text&gt;</code> 无 :bind 属性（永不渲染）</td><td>Warning</td></tr>
+</table>
+
+<h2>4.3 AOT 校验规则</h2>
+
+<pre><code>// 5 条校验规则 (aot-validator.php)
+Rule 1: 文件名 stem 中 ≤1 个点 (Calculator.gen.php ✓, Foo.Bar.gen.php ✗)
+Rule 2: 无 const 嵌套数组          (const LAYOUT = [...] ✗)
+Rule 3: 无变量属性访问             ($obj->$var ✗)
+Rule 4: 无变量方法调用             ($obj->$method() ✗)
+Rule 5: 无 PHP8 独有函数           (str_contains → 建议 strpos)</code></pre>
+
+<div class="info"><strong>注意</strong>：校验规则本身也用 PHP7 兼容写法（<code>substr($s, -4) !== '.php'</code> 而非 <code>str_ends_with()</code>），确保 AOT validator 可在各 PHP 版本运行。</div>
+
+<h2>4.4 CSS 映射表</h2>
+
+<p>从散落的 if/else 升级为正式 <code>PROPERTY_MAP</code> 常量（关联数组），扩展新属性只需加一行：</p>
+
+<pre><code>const PROPERTY_MAP = [
+    'background'    => ['key'=>'bg',           'parser'=>'CssMappings::parseHexColor',   'default'=>0],
+    'color'         => ['key'=>'fg',           'parser'=>'CssMappings::parseHexColor',   'default'=>0xFFFFFF],
+    'font-size'     => ['key'=>'fontSize',     'parser'=>'CssMappings::parsePixels',     'default'=>16],
+    'font-weight'   => ['key'=>'bold',         'parser'=>'CssMappings::parseFontWeight', 'default'=>0],
+    // M1 新增:
+    'border-radius' => ['key'=>'borderRadius', 'parser'=>'CssMappings::parsePixels',     'default'=>0],
+    'padding'       => ['key'=>'padding',      'parser'=>'CssMappings::parsePixels',     'default'=>0],
+    'margin'        => ['key'=>'margin',       'parser'=>'CssMappings::parsePixels',     'default'=>0],
+    'text-align'    => ['key'=>'textAlign',    'parser'=>'CssMappings::parseTextAlign',  'default'=>'left'],
+];</code></pre>
+
+<p>同时新增 <code>hexToBgr()</code> 对 <code>#RGB</code> 简写格式的支持（D10 技术债务修复）。</p>
+
+<!-- ===== 5. 测试覆盖 ===== -->
+<h1>五、测试覆盖</h1>
+
+<h2>5.1 测试分组与结果</h2>
+
+<table>
+<tr><th>组</th><th>测试数</th><th>覆盖内容</th><th>结果</th></tr>
+<tr><td>1. CSS Mappings</td><td>9</td><td>hexToBgr 5种输入 (6位/3位/无效)、borderColor 边界、parseStyleBlock 8 class、PROPERTY_MAP ≥8</td><td class="done">全部通过</td></tr>
+<tr><td>2. Template Parser</td><td>7</td><td>完整 Calculator.vue 解析、行号跟踪、未知标签、缺属性、btn越位、@click带参数、AST JSON输出</td><td class="done">全部通过</td></tr>
+<tr><td>3. AST → Layout</td><td>1</td><td>lowerToLayout 输出 elements/buttons 数量和坐标</td><td class="done">全部通过</td></tr>
+<tr><td>4. AOT Validator</td><td>7</td><td>正常文件名通过、多点文件名拒绝、const数组拒绝、$obj->$var拒绝、$obj->$method()拒绝、PHP8函数警告</td><td class="done">全部通过</td></tr>
+<tr><td>5. 全管道集成</td><td>1</td><td>完整模拟 CLI 编译流程：块提取→CSS解析→AST→Layout→校验→所有断言</td><td class="done">全部通过</td></tr>
+<tr style="border-top:2px solid var(--accent2)"><td><strong>合计</strong></td><td><strong>25</strong></td><td>—</td><td class="done"><strong>100% 通过</strong></td></tr>
+</table>
+
+<h2>5.2 测试运行命令</h2>
+<pre><code>php tests/sfc-compiler-test.php     # 25项单元测试
+php tests/verify-layout.php         # 快速回归: 加载生成文件验证布局</code></pre>
+
+<!-- ===== 6. 验收对照 ===== -->
+<h1>六、M1 验收标准对照</h1>
+
+<table>
+<tr><th>#</th><th>验收项 (v3文档 §5.3.5)</th><th>验证方法</th><th>状态</th></tr>
+<tr>
+  <td>1</td>
+  <td>编译器解析 Calculator.vue 输出 AST 而非直接数组</td>
+  <td><code>php tools/sfc-compiler.php ... --dump-ast</code> 输出完整 JSON 树（含行号）</td>
+  <td class="done">✅</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>模板语法错误时输出 "Line N: 错误描述"</td>
+  <td>Parser 收集 <code>TemplateParseError[]</code>，含 line + message，stderr 输出</td>
+  <td class="done">✅</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>生成的 .gen.php 不触发 AOT 校验警告</td>
+  <td><code>AotValidator::validate()</code> 返回 true，0 errors 0 warnings</td>
+  <td class="done">✅</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>CSS 映射表支持至少 8 个属性</td>
+  <td><code>count(CssMappings::PROPERTY_MAP) >= 8</code></td>
+  <td class="done">✅</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>单元测试覆盖 hexToBgr / borderColor / grid坐标 / 代码生成</td>
+  <td>25 tests, 100% pass</td>
+  <td class="done">✅</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td>编译产物功能与 v2 完全一致（回归）</td>
+  <td>layout 输出 4 elements + 18 buttons，坐标/颜色/绑定与 v2 一致；AOT PHP→C++ 转换零错误</td>
+  <td class="done">✅</td>
+</tr>
+</table>
+
+<!-- ===== 7. 遇到的问题与解决 ===== -->
+<h1>七、实施中遇到的问题与解决</h1>
+
+<table>
+<tr><th>#</th><th>问题</th><th>解决</th></tr>
+<tr>
+  <td>1</td>
+  <td><code>ParseError</code> 与 PHP 7.x 内置类冲突</td>
+  <td>重命名为 <code>TemplateParseError</code></td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><code>str_ends_with()</code> 在 aot-validator 中使用 (<strong>反讽</strong>: AOT校验器自己用了PHP8函数)</td>
+  <td>改为 <code>substr($basename, -4) !== '.php'</code></td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>文件名校验规则太严格 — <code>Calculator.gen.php</code> (1个stem点) 被误拒绝</td>
+  <td>改为检查 stem 中的点数 ≤1（允许 <code>Foo.gen.php</code>，拒绝 <code>Foo.Bar.gen.php</code>）</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>Top-level code warning 误报 — <code>const WINDOW_WIDTH = ...</code> 是合法顶层声明</td>
+  <td>移除 Rule 6（过度敏感），const/class/function 顶层声明在生成文件中合法</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>Parser EOF token 在 parseApp 后被误报为 "Unexpected content after &lt;/app&gt;"</td>
+  <td>添加 <code>TOK_EOF</code> 豁免: 仅在 token 非 EOF 且非空白时报警</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td><strong>AOT 编译器拾取 <code>src/compiler/</code></strong> — 导致 <code>require_once</code> 顶层语句 AOT 编译失败</td>
+  <td>将编译器模块从 <code>src/compiler/</code> 移至 <code>tools/compiler/</code>（不在 project.yml sources 中）</td>
+</tr>
+</table>
+
+<div class="success">
+  <strong>教训</strong>：AOT 编译器的 <code>sources: ["./src"]</code> 配置会递归包含子目录。任何仅用于标准 PHP CLI 的工具代码必须放在 <code>src/</code> 目录树之外。已将此约束补充到 AOT 校验规则知识库中。
+</div>
+
+<!-- ===== 8. 技术债务更新 ===== -->
+<h1>八、技术债务状态更新</h1>
+
+<p>基于 v3 文档 §3.3 的 D1-D10 清单，M1 完成后的状态：</p>
+
+<table>
+<tr><th>#</th><th>严重度</th><th>问题</th><th>M1 后状态</th></tr>
+<tr>
+  <td>D1</td><td class="wip">🟠 高</td>
+  <td>正则解析无 AST (sfc-compiler.php:111-227)</td>
+  <td class="done">✅ 已偿还 — 递归下降 parser + AST 上线，支持 --dump-ast</td>
+</tr>
+<tr>
+  <td>D2</td><td class="wip">🟠 高</td>
+  <td>CSS 解析仅 4 属性 (sfc-compiler.php:64-88)</td>
+  <td class="done">✅ 已偿还 — CssMappings::PROPERTY_MAP 支持 8 属性，易扩展</td>
+</tr>
+<tr>
+  <td>D3</td><td class="wip">🟠 高</td>
+  <td>代码生成无 AOT 校验 (sfc-compiler.php:244-300)</td>
+  <td class="done">✅ 已偿还 — AotValidator 5 条规则，编译前自动检查</td>
+</tr>
+<tr>
+  <td>D10</td><td>🟢 低</td>
+  <td>hexToBgr() 不接受 #RGB 简写</td>
+  <td class="done">✅ 已偿还 — 支持 #RGB 3位简写格式</td>
+</tr>
+<tr><td colspan="4" style="text-align:center;color:#888"><em>D4-D9 状态不变，待 M2/M3 处理</em></td></tr>
+</table>
+
+<div class="success">
+  <strong>M1 偿还了全部 3 项高严重度技术债务 (D1-D3) 和 1 项低严重度债务 (D10)。</strong><br>
+  剩余: D4(getBindValue) D5(dispatchClick) D6(手动dirty) 待 M2; D7-D9 待远期。
+</div>
+
+<!-- ===== 9. 下一步 ===== -->
+<h1>九、下一里程碑: M2 响应式系统完善</h1>
+
+<div class="phase-card">
+  <div class="phase-header">
+    <div class="phase-num done-num">M2</div>
+    <div>
+      <h3 style="margin:0">里程碑 2 · 响应式系统完善</h3>
+      <div style="font-size:0.85em;color:#888">对应 v1 Phase 5 · 依赖 M1 AST 输出</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill progress-done" style="width:0%"></div></div>
+
+  <h4>目标 (v3文档 §6.5)</h4>
+  <ol>
+    <li><strong>v-model 双向绑定</strong>：编译器自动生成 setter + dirty 标记</li>
+    <li><strong>v-if 条件渲染</strong>：编译期生成 if/else 分支代码</li>
+    <li><strong>v-for 列表渲染</strong>：编译期生成 foreach 循环 + 动态坐标偏移</li>
+    <li><strong>计算属性</strong>：computed 声明 → 自动生成 getter 方法</li>
+    <li><strong>自动 dirty 插入</strong>：编译器分析 script 块，自动在修改属性后插入 <code>$this->dirty = true</code></li>
+  </ol>
+
+  <h4>涉及文件改动</h4>
+  <ul>
+    <li><code>tools/compiler/template-parser.php</code> — 新增 v-if/v-for/v-model 属性解析</li>
+    <li><code>tools/sfc-compiler.php</code> — 代码生成段新增 auto-dirty 分析 + setter 生成</li>
+    <li><code>main.php</code> — 删除手动 getBindValue()/dispatchClick()（改为编译器生成）</li>
+    <li><code>Calculator.vue</code> — 删除手写 <code>$this->dirty = true</code> (7处)</li>
+  </ul>
+
+  <h4>验收标准 (v3文档 §6.5)</h4>
+  <ol>
+    <li>Calculator.vue 中删除所有手动 dirty → 编译器自动插入</li>
+    <li>v-model 指令生效（输入后 display 文字自动更新）</li>
+    <li>v-if 指令：条件不满足的元素不渲染</li>
+    <li>.gen.php 输出通过 AOT 校验 (0 warnings)</li>
+    <li>编译产物功能与 v2 一致（回归测试通过）</li>
+  </ol>
+</div>
+
+<!-- ===== 10. 附录 ===== -->
+<h1>十、附录</h1>
+
+<h2>10.1 完整构建验证命令</h2>
+<pre><code>:: SFC 编译
+php tools/sfc-compiler.php src/Calculator.vue [--dump-ast]
+
+:: 单元测试
+php tests/sfc-compiler-test.php
+
+:: 布局回归
+php tests/verify-layout.php
+
+:: AOT 编译 (需 MSVC 环境)
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+swoole_compiler.exe examples/vue-calc/project.yml -f</code></pre>
+
+<h2>10.2 文件统计</h2>
+<table>
+<tr><th>类别</th><th>文件数</th><th>总行数</th></tr>
+<tr><td>新建编译器模块</td><td>4</td><td>~1,130</td></tr>
+<tr><td>新建测试文件</td><td>1 (+1辅助)</td><td>~280</td></tr>
+<tr><td>重写文件</td><td>1 (sfc-compiler.php)</td><td>303→210 (-93)</td></tr>
+<tr style="border-top:2px solid var(--accent2)"><td><strong>M1 净增量</strong></td><td><strong>+6 文件</strong></td><td><strong>~1,320 行</strong></td></tr>
+</table>
+
+<h2>10.3 相关文档</h2>
+<ul>
+  <li><a href="VueCalc技术规划文档_v3.html">VueCalc技术规划文档_v3.html</a> — v3 设计总体规划</li>
+  <li><code>tools/sfc-compiler.php</code> — 编译器入口（v3 重写版）</li>
+</ul>
+
+</div>
+</body>
+</html>

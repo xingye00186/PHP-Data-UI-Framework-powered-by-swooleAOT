@@ -1,0 +1,679 @@
+<?php
+/**
+ * Recursive Descent Template Parser for VueCalc SFC
+ * 
+ * Replaces the regex-based parsing in the old sfc-compiler.php (L111-227).
+ * 
+ * Architecture:
+ *   1. Tokenize:    template string → Token[]  (lexer)
+ *   2. Parse:       Token[] → AppNode           (recursive descent)
+ *   3. Lower:       AppNode → layout arrays     (code generation prep)
+ * 
+ * Error handling: collects TemplateParseError[] with line numbers.
+ * Unknown tags produce UnknownNode in the AST rather than being silently ignored.
+ */
+
+require_once __DIR__ . '/ast-nodes.php';
+
+// ============================================================
+// Token types and Token class
+// ============================================================
+
+define('TOK_EOF',        0);
+define('TOK_TAG_OPEN',   1);  // <tagname ...>
+define('TOK_TAG_CLOSE',  2);  // </tagname>
+define('TOK_TAG_SELF',   3);  // <tagname ... />
+define('TOK_TEXT',       4);  // whitespace / non-tag content
+define('TOK_COMMENT',    5);  // <!-- ... -->
+
+class Token
+{
+    public int $type;
+    public string $content;   // Raw token text including <...>
+    public int $line;
+
+    public function __construct(int $type, string $content, int $line)
+    {
+        $this->type    = $type;
+        $this->content = $content;
+        $this->line    = $line;
+    }
+}
+
+class TemplateParseError
+{
+    public string $message;
+    public int $line;
+
+    public function __construct(string $message, int $line)
+    {
+        $this->message = $message;
+        $this->line    = $line;
+    }
+
+    public function __toString(): string
+    {
+        return "Line {$this->line}: {$this->message}";
+    }
+}
+
+class TemplateParser
+{
+    /** @var Token[] */
+    private array $tokens = [];
+    private int $pos = 0;
+
+    /** @var TemplateParseError[] */
+    private array $errors = [];
+
+    // ============================================================
+    // Public API
+    // ============================================================
+
+    /**
+     * Parse a template string into an AppNode AST.
+     * 
+     * @param string $template  Content of <template>...</template> block
+     * @return AppNode
+     */
+    public function parse(string $template): AppNode
+    {
+        $this->errors = [];
+        $this->tokens = $this->tokenize($template);
+        $this->pos    = 0;
+
+        $app = $this->parseDocument();
+
+        // Check for unclosed tags / leftover tokens
+        if ($this->pos < count($this->tokens)) {
+            $tok = $this->tokens[$this->pos];
+            if ($tok->type !== TOK_EOF && ($tok->type !== TOK_TEXT || trim($tok->content) !== '')) {
+                $this->error("Unexpected content after </app>", $tok->line);
+            }
+        }
+
+        return $app;
+    }
+
+    /**
+     * @return TemplateParseError[]
+     */
+    public function getErrors(): array
+    {
+        return $this->errors;
+    }
+
+    /**
+     * Pretty-print the AST for debugging (--dump-ast mode).
+     */
+    public function dumpAst(AppNode $app): string
+    {
+        return json_encode($this->astToArray($app), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    }
+
+    // ============================================================
+    // Tokenizer (Lexer)
+    // ============================================================
+
+    /**
+     * Split template text into tokens, tracking line numbers.
+     * Strategy: match all tag-like and comment constructs with preg_split.
+     */
+    private function tokenize(string $template): array
+    {
+        $tokens = [];
+        $line   = 1;
+        $len    = strlen($template);
+        $i      = 0;
+
+        while ($i < $len) {
+            // Count newlines for line tracking
+            if ($template[$i] === "\n") {
+                $line++;
+                $i++;
+                continue;
+            }
+            if ($template[$i] === "\r") {
+                $i++;
+                if ($i < $len && $template[$i] === "\n") {
+                    $line++;
+                    $i++;
+                }
+                continue;
+            }
+
+            // Skip whitespace (but not newlines, handled above)
+            if ($template[$i] === ' ' || $template[$i] === "\t") {
+                $i++;
+                continue;
+            }
+
+            // Check for comment <!-- ... -->
+            if ($i + 3 < $len && substr($template, $i, 4) === '<!--') {
+                $end = strpos($template, '-->', $i + 4);
+                if ($end === false) {
+                    $this->error('Unclosed comment', $line);
+                    break;
+                }
+                $comment = substr($template, $i, $end + 3 - $i);
+                $newlines = substr_count($comment, "\n");
+                $tokens[] = new Token(TOK_COMMENT, $comment, $line);
+                $line += $newlines;
+                $i = $end + 3;
+                continue;
+            }
+
+            // Tag: starts with '<'
+            if ($template[$i] === '<') {
+                $end = strpos($template, '>', $i);
+                if ($end === false) {
+                    $this->error('Unclosed tag starting with "<"', $line);
+                    break;
+                }
+                $tagText = substr($template, $i, $end + 1 - $i);
+
+                // Determine tag type
+                if (strlen($tagText) >= 3 && $tagText[1] === '/') {
+                    // Closing tag: </tagname>
+                    $tokens[] = new Token(TOK_TAG_CLOSE, $tagText, $line);
+                } elseif (strlen($tagText) >= 3 && $tagText[strlen($tagText) - 2] === '/') {
+                    // Self-closing tag: <tagname ... />
+                    $tokens[] = new Token(TOK_TAG_SELF, $tagText, $line);
+                } else {
+                    // Opening tag: <tagname ...>
+                    $tokens[] = new Token(TOK_TAG_OPEN, $tagText, $line);
+                }
+
+                $newlines = substr_count($tagText, "\n");
+                $line += $newlines;
+                $i = $end + 1;
+                continue;
+            }
+
+            // Non-whitespace text between tags (skip, but track newlines)
+            $i++;
+        }
+
+        $tokens[] = new Token(TOK_EOF, '', $line);
+        return $tokens;
+    }
+
+    // ============================================================
+    // Parser: Recursive Descent
+    // ============================================================
+
+    private function parseDocument(): AppNode
+    {
+        $this->skipUntilTag();
+
+        // Expect <app> as root
+        $tok = $this->current();
+        if ($tok->type === TOK_EOF) {
+            $this->error('Empty template: missing <app> root element', $tok->line);
+            return new AppNode('Untitled', 336, 430, $tok->line);
+        }
+
+        $tagName = $this->getTagName($tok->content);
+
+        if ($tagName !== 'app' || $tok->type !== TOK_TAG_OPEN) {
+            $this->error("Expected <app> as root element, got <$tagName>", $tok->line);
+            return new AppNode('Untitled', 336, 430, $tok->line);
+        }
+
+        return $this->parseApp($tok);
+    }
+
+    private function parseApp(Token $openTok): AppNode
+    {
+        $attrs = $this->parseAttrs($openTok->content);
+
+        $title  = $attrs['title'] ?? 'Untitled';
+        $width  = (int)($attrs['width'] ?? 336);
+        $height = (int)($attrs['height'] ?? 430);
+
+        if (!isset($attrs['width']) || !isset($attrs['height'])) {
+            $this->error(
+                "<app> missing required attributes: " .
+                (isset($attrs['width']) ? '' : 'width ') .
+                (isset($attrs['height']) ? '' : 'height'),
+                $openTok->line
+            );
+        }
+
+        $app = new AppNode($title, $width, $height, $openTok->line);
+        $this->advance(); // consume <app>
+
+        // Parse children until </app>
+        while (true) {
+            $tok = $this->current();
+
+            if ($tok->type === TOK_EOF) {
+                $this->error('Unclosed <app> element (missing </app>)', $openTok->line);
+                break;
+            }
+
+            if ($tok->type === TOK_TAG_CLOSE) {
+                $closeName = $this->getTagName($tok->content);
+                if ($closeName === 'app') {
+                    $this->advance(); // consume </app>
+                    break;
+                }
+                $this->error("Unexpected closing tag </$closeName> (expected </app>)", $tok->line);
+                $this->advance();
+                continue;
+            }
+
+            if ($tok->type === TOK_TAG_OPEN || $tok->type === TOK_TAG_SELF) {
+                $child = $this->parseElement();
+                if ($child !== null) {
+                    $app->children[] = $child;
+                }
+                continue;
+            }
+
+            // Skip comments, text, etc.
+            $this->advance();
+        }
+
+        return $app;
+    }
+
+    /**
+     * Parse a child element of <app>: rect, text, grid, or unknown.
+     */
+    private function parseElement(): ?TemplateNode
+    {
+        $tok = $this->current();
+        $tagName = $this->getTagName($tok->content);
+        $tagType = $tok->type;
+
+        switch ($tagName) {
+            case 'rect':
+                return $this->parseRect($tok);
+
+            case 'text':
+                return $this->parseText($tok);
+
+            case 'grid':
+                if ($tagType === TOK_TAG_SELF) {
+                    $this->error('<grid> cannot be self-closing (must contain <btn> children)', $tok->line);
+                    $this->advance();
+                    return null;
+                }
+                return $this->parseGrid($tok);
+
+            case 'btn':
+                $this->error('<btn> must be inside <grid>, not directly in <app>', $tok->line);
+                $this->advance();
+                return null;
+
+            default:
+                // Unknown tag: report but include in AST
+                $this->error("Unknown element <$tagName> — only app/rect/text/grid/btn are supported", $tok->line);
+                $node = new UnknownNode($tagName, $tok->line);
+                $this->advance();
+                return $node;
+        }
+    }
+
+    private function parseRect(Token $tok): RectNode
+    {
+        $attrs = $this->parseAttrs($tok->content);
+        $this->advance();
+
+        $x   = (int)($attrs['x'] ?? 0);
+        $y   = (int)($attrs['y'] ?? 0);
+        $w   = (int)($attrs['w'] ?? 0);
+        $h   = (int)($attrs['h'] ?? 0);
+        $cls = $attrs['class'] ?? '';
+
+        if ($w === 0 || $h === 0) {
+            $this->error("<rect> has zero width or height", $tok->line);
+        }
+        if ($cls === '') {
+            $this->error("<rect> missing class attribute", $tok->line);
+        }
+
+        return new RectNode($x, $y, $w, $h, $cls, $tok->line);
+    }
+
+    private function parseText(Token $tok): TextNode
+    {
+        $attrs = $this->parseAttrs($tok->content);
+        $this->advance();
+
+        $x     = (int)($attrs['x'] ?? 0);
+        $y     = (int)($attrs['y'] ?? 0);
+        $bind  = $attrs[':bind'] ?? '';
+        $cls   = $attrs['class'] ?? '';
+        $align = $attrs['align'] ?? 'left';
+        $contW = (int)($attrs['container-w'] ?? 0);
+        $contX = (int)($attrs['container-x'] ?? 0);
+
+        if ($bind === '') {
+            $this->error('<text> has no :bind attribute (will never render text)', $tok->line);
+        }
+        if ($cls === '') {
+            $this->error('<text> missing class attribute', $tok->line);
+        }
+
+        return new TextNode($x, $y, $bind, $cls, $align, $contW, $contX, $tok->line);
+    }
+
+    private function parseGrid(Token $openTok): GridNode
+    {
+        $attrs = $this->parseAttrs($openTok->content);
+        $this->advance(); // consume <grid>
+
+        $x      = (int)($attrs['x'] ?? 0);
+        $y      = (int)($attrs['y'] ?? 0);
+        $cols   = (int)($attrs['cols'] ?? 4);
+        $rows   = (int)($attrs['rows'] ?? 5);
+        $cellW  = (int)($attrs['cell-w'] ?? 80);
+        $cellH  = (int)($attrs['cell-h'] ?? 60);
+        $margin = (int)($attrs['margin'] ?? 4);
+
+        $grid = new GridNode($x, $y, $cols, $rows, $cellW, $cellH, $margin, $openTok->line);
+
+        // Parse <btn> children until </grid>
+        while (true) {
+            $tok = $this->current();
+
+            if ($tok->type === TOK_EOF) {
+                $this->error('Unclosed <grid> (missing </grid>)', $openTok->line);
+                break;
+            }
+
+            if ($tok->type === TOK_TAG_CLOSE) {
+                $closeName = $this->getTagName($tok->content);
+                if ($closeName === 'grid') {
+                    $this->advance(); // consume </grid>
+                    break;
+                }
+                $this->error("Unexpected closing tag </$closeName> inside <grid>", $tok->line);
+                $this->advance();
+                continue;
+            }
+
+            if ($tok->type === TOK_TAG_SELF) {
+                $childName = $this->getTagName($tok->content);
+                if ($childName === 'btn') {
+                    $grid->buttons[] = $this->parseBtn($tok);
+                } else {
+                    $this->error("<$childName> not allowed inside <grid> (only <btn> supported)", $tok->line);
+                    $this->advance();
+                }
+                continue;
+            }
+
+            if ($tok->type === TOK_TAG_OPEN) {
+                $childName = $this->getTagName($tok->content);
+                $this->error("<$childName> not allowed inside <grid> (only <btn> supported)", $tok->line);
+                $this->advance();
+                continue;
+            }
+
+            // Skip comments / text
+            $this->advance();
+        }
+
+        return $grid;
+    }
+
+    private function parseBtn(Token $tok): BtnNode
+    {
+        $attrs = $this->parseAttrs($tok->content);
+        $this->advance();
+
+        $row   = (int)($attrs['row'] ?? 0);
+        $col   = (int)($attrs['col'] ?? 0);
+        $label = $attrs['label'] ?? '';
+        $cls   = $attrs['class'] ?? '';
+        $click = $attrs['@click'] ?? '';
+
+        // Parse @click: "method" or "method('arg')"
+        $handler = $click;
+        $arg     = null;
+        if ($click !== '' && preg_match("/^(\w+)\(['\"]([^'\"]*)['\"]\)$/", $click, $m)) {
+            $handler = $m[1];
+            $arg     = $m[2];
+        }
+
+        if ($label === '') {
+            $this->error('<btn> missing label', $tok->line);
+        }
+        if ($click === '') {
+            $this->error('<btn> missing @click handler', $tok->line);
+        }
+
+        return new BtnNode($row, $col, $label, $cls, $handler, $arg, $tok->line);
+    }
+
+    // ============================================================
+    // AST → Layout Arrays (Lowering / Code Generation Prep)
+    // ============================================================
+
+    /**
+     * Convert an AppNode AST to the layout arrays expected by the code generator.
+     * This replaces the old direct regex→array approach.
+     * 
+     * @param AppNode $app         Parsed AST
+     * @param array   $classStyles CSS class style map (from CssMappings::parseStyleBlock)
+     * @return array  ['elements' => [...], 'buttons' => [...]]
+     */
+    public function lowerToLayout(AppNode $app, array $classStyles): array
+    {
+        $elements = [];
+        $buttons  = [];
+
+        foreach ($app->children as $child) {
+            if ($child instanceof RectNode) {
+                $style = $classStyles[$child->class] ?? [];
+                $elements[] = [
+                    'type'  => 'rect',
+                    'x'     => $child->x,
+                    'y'     => $child->y,
+                    'w'     => $child->w,
+                    'h'     => $child->h,
+                    'color' => $style['bg'] ?? 0,
+                ];
+            } elseif ($child instanceof TextNode) {
+                $style = $classStyles[$child->class] ?? [];
+                $el = [
+                    'type'     => 'text',
+                    'bind'     => $child->bind,
+                    'x'        => $child->x,
+                    'y'        => $child->y,
+                    'align'    => $child->align,
+                    'fontSize' => $style['fontSize'] ?? 16,
+                    'color'    => $style['fg'] ?? 0xFFFFFF,
+                    'bold'     => $style['bold'] ?? 0,
+                ];
+                if ($child->hasContainer) {
+                    $el['containerW'] = $child->containerW;
+                    $el['containerX'] = $child->containerX;
+                }
+                $elements[] = $el;
+            } elseif ($child instanceof GridNode) {
+                // Grid's buttons are computed at compile-time
+                $gx = $child->x;
+                $gy = $child->y;
+                foreach ($child->buttons as $btn) {
+                    $style  = $classStyles[$btn->class] ?? [];
+                    $bg     = $style['bg'] ?? 0x323232;
+                    $fg     = $style['fg'] ?? 0xFFFFFF;
+                    $border = $style['border'] ?? CssMappings::borderColor($bg);
+
+                    // Compile-time coordinate calculation
+                    $bx = $gx + $btn->col * $child->cellW + $child->margin;
+                    $by = $gy + $btn->row * $child->cellH + $child->margin;
+                    $bw = $child->cellW - $child->margin * 2;
+                    $bh = $child->cellH - $child->margin * 2;
+
+                    $buttons[] = [
+                        'label'   => $btn->label,
+                        'x'       => $bx,
+                        'y'       => $by,
+                        'w'       => $bw,
+                        'h'       => $bh,
+                        'bg'      => $bg,
+                        'fg'      => $fg,
+                        'border'  => $border,
+                        'handler' => $btn->handler,
+                        'arg'     => $btn->arg,
+                    ];
+                }
+            } elseif ($child instanceof UnknownNode) {
+                // Unknown tags are skipped in layout output (already reported as error)
+                // But we add a placeholder comment in the generated file
+                $elements[] = [
+                    'type'   => '__unknown__',
+                    'tag'    => $child->tagName,
+                    'line'   => $child->line,
+                ];
+            }
+        }
+
+        return [
+            'elements' => $elements,
+            'buttons'  => $buttons,
+        ];
+    }
+
+    // ============================================================
+    // Helpers
+    // ============================================================
+
+    /**
+     * Extract tag name from "<tagname ...>" or "</tagname>" or "<tagname ... />"
+     */
+    private function getTagName(string $tagText): string
+    {
+        $tagText = trim($tagText, "<> \t\n\r\0\x0B/");
+        $spacePos = strpos($tagText, ' ');
+        if ($spacePos !== false) {
+            return substr($tagText, 0, $spacePos);
+        }
+        // Handle self-closing: "tagname/" → "tagname"
+        if (substr($tagText, -1) === '/') {
+            return rtrim(substr($tagText, 0, -1));
+        }
+        return $tagText;
+    }
+
+    /**
+     * Parse attributes from a tag string like: key="value" key2="value2"
+     */
+    private function parseAttrs(string $tagText): array
+    {
+        $attrs = [];
+        // Extract everything after the tag name
+        $tagName = $this->getTagName($tagText);
+        $attrStr = substr($tagText, strlen($tagName) + 1); // skip "<tagname "
+        $attrStr = trim($attrStr, "> \t\n\r\0\x0B/");
+
+        if ($attrStr === '') {
+            return $attrs;
+        }
+
+        // Match attr="value" or attr='value' — supports :bind, @click, container-w, etc.
+        if (preg_match_all('#([a-zA-Z@:-][a-zA-Z0-9@:_-]*)(?:\s*=\s*"([^"]*)"|\s*=\s*\'([^\']*)\')?#', $attrStr, $m, PREG_SET_ORDER)) {
+            foreach ($m as $a) {
+                $key   = $a[1];
+                $value = $a[2] ?? ($a[3] ?? '');
+                $attrs[$key] = $value;
+            }
+        }
+
+        return $attrs;
+    }
+
+    private function current(): Token
+    {
+        return $this->tokens[$this->pos] ?? new Token(TOK_EOF, '', 0);
+    }
+
+    private function advance(): void
+    {
+        if ($this->pos < count($this->tokens)) {
+            $this->pos++;
+        }
+    }
+
+    private function skipUntilTag(): void
+    {
+        while ($this->current()->type === TOK_TEXT || $this->current()->type === TOK_COMMENT) {
+            $this->advance();
+        }
+    }
+
+    private function error(string $message, int $line): void
+    {
+        $this->errors[] = new TemplateParseError($message, $line);
+    }
+
+    // ============================================================
+    // AST Debug: convert to array for JSON dump
+    // ============================================================
+
+    private function astToArray(TemplateNode $node): array
+    {
+        $type = get_class($node);
+        $result = ['_type' => $type, '_line' => $node->line];
+
+        switch ($type) {
+            case 'AppNode':
+                $result['title']  = $node->title;
+                $result['width']  = $node->width;
+                $result['height'] = $node->height;
+                $result['children'] = array_map([$this, 'astToArray'], $node->children);
+                break;
+
+            case 'RectNode':
+                $result['x'] = $node->x;
+                $result['y'] = $node->y;
+                $result['w'] = $node->w;
+                $result['h'] = $node->h;
+                $result['class'] = $node->class;
+                break;
+
+            case 'TextNode':
+                $result['x'] = $node->x;
+                $result['y'] = $node->y;
+                $result['bind'] = $node->bind;
+                $result['class'] = $node->class;
+                $result['align'] = $node->align;
+                if ($node->hasContainer) {
+                    $result['containerW'] = $node->containerW;
+                    $result['containerX'] = $node->containerX;
+                }
+                break;
+
+            case 'GridNode':
+                $result['x'] = $node->x;
+                $result['y'] = $node->y;
+                $result['cols'] = $node->cols;
+                $result['rows'] = $node->rows;
+                $result['cellW'] = $node->cellW;
+                $result['cellH'] = $node->cellH;
+                $result['margin'] = $node->margin;
+                $result['buttons'] = array_map([$this, 'astToArray'], $node->buttons);
+                break;
+
+            case 'BtnNode':
+                $result['row'] = $node->row;
+                $result['col'] = $node->col;
+                $result['label'] = $node->label;
+                $result['class'] = $node->class;
+                $result['handler'] = $node->handler;
+                $result['arg'] = $node->arg;
+                break;
+
+            case 'UnknownNode':
+                $result['tagName'] = $node->tagName;
+                break;
+        }
+
+        return $result;
+    }
+}
