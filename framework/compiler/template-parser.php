@@ -14,6 +14,7 @@
  */
 
 require_once __DIR__ . '/ast-nodes.php';
+require_once __DIR__ . '/component-registry.php';
 
 // ============================================================
 // Token types and Token class
@@ -65,6 +66,14 @@ class TemplateParser
 
     /** @var TemplateParseError[] */
     private array $errors = [];
+
+    /** v5 M2: Optional component registry for resolving custom tags */
+    private ?ComponentRegistry $componentRegistry = null;
+
+    public function __construct(?ComponentRegistry $registry = null)
+    {
+        $this->componentRegistry = $registry;
+    }
 
     // ============================================================
     // Public API
@@ -308,6 +317,13 @@ class TemplateParser
                 return null;
 
             default:
+                // v5 M2: Check component registry before reporting unknown
+                if ($this->componentRegistry !== null) {
+                    $compFile = $this->componentRegistry->resolve($tagName);
+                    if ($compFile !== null) {
+                        return $this->parseComponentRef($tok, $tagName, $compFile);
+                    }
+                }
                 // Unknown tag: report but include in AST
                 $this->error("Unknown element <$tagName> — only app/rect/text/grid/btn are supported", $tok->line);
                 $node = new UnknownNode($tagName, $tok->line);
@@ -471,6 +487,60 @@ class TemplateParser
         return $node;
     }
 
+    // v5 M2: Parse a component reference tag
+    // e.g., <display-panel x="0" y="80" :value="display" />
+    // or    <display-panel x="0" y="80">...slot content...</display-panel>
+    private function parseComponentRef(Token $tok, string $tagName, string $compFile): ComponentRefNode
+    {
+        $attrs = $this->parseAttrs($tok->content);
+        $slotChildren = [];
+        $selfClosing = ($tok->type === TOK_TAG_SELF);
+
+        if (!$selfClosing) {
+            $this->advance(); // consume opening tag <display-panel>
+
+            // Parse any child elements between open and close tags (slot content)
+            while (true) {
+                $innerTok = $this->current();
+
+                if ($innerTok->type === TOK_EOF) {
+                    $this->error("Unclosed component <$tagName> (missing </$tagName>)", $tok->line);
+                    break;
+                }
+
+                if ($innerTok->type === TOK_TAG_CLOSE) {
+                    $closeName = $this->getTagName($innerTok->content);
+                    if ($closeName === $tagName) {
+                        $this->advance(); // consume </display-panel>
+                        break;
+                    }
+                    $this->error("Unexpected closing tag </$closeName> inside <$tagName>", $innerTok->line);
+                    $this->advance();
+                    continue;
+                }
+
+                if ($innerTok->type === TOK_TAG_OPEN || $innerTok->type === TOK_TAG_SELF) {
+                    $child = $this->parseElement();
+                    if ($child !== null) {
+                        $slotChildren[] = $child;
+                    }
+                    continue;
+                }
+
+                // Skip comments, text, etc.
+                $this->advance();
+            }
+        } else {
+            $this->advance(); // consume self-closing tag
+        }
+
+        $vIf = $attrs['v-if'] ?? '';
+
+        $node = new ComponentRefNode($tagName, $compFile, $attrs, $slotChildren, $selfClosing, $tok->line);
+        $node->vIf = $vIf;
+        return $node;
+    }
+
     // ============================================================
     // AST → Layout Arrays (Lowering / Code Generation Prep)
     // ============================================================
@@ -562,9 +632,13 @@ class TemplateParser
                         'handler' => $btn->handler,
                         'arg'     => $btn->arg,
                     ];
-                    // v4 M2.5: v-if condition on button
+                    // v4 M2.5: v-if condition on button (or propagated from grid)
                     if ($btn->vIf !== '') {
                         $btnData['condition'] = $this->parseVIfCondition($btn->vIf);
+                        $condProps[$btnData['condition']['prop']] = true;
+                    } elseif ($child->vIf !== '') {
+                        // v5 M3: propagate grid's v-if to all buttons within it
+                        $btnData['condition'] = $this->parseVIfCondition($child->vIf);
                         $condProps[$btnData['condition']['prop']] = true;
                     }
                     $buttons[] = $btnData;
@@ -581,6 +655,15 @@ class TemplateParser
                 $elements[] = [
                     'type'   => '__unknown__',
                     'tag'    => $child->tagName,
+                    'line'   => $child->line,
+                ];
+            } elseif ($child instanceof ComponentRefNode) {
+                // v5 M2: Should have been resolved by sfc-compiler before lowering.
+                // If we get here, the component was not resolved — report as error marker.
+                $elements[] = [
+                    'type'   => '__unresolved_component__',
+                    'tag'    => $child->tagName,
+                    'file'   => $child->componentFile,
                     'line'   => $child->line,
                 ];
             }
@@ -664,9 +747,11 @@ class TemplateParser
 
     /**
      * v4 M2.5: Parse v-if condition string into a structured condition array.
+     * v5 M3: Added !propName negation support.
      * 
      * Supported forms:
      *   "propName"            → ['prop' => 'propName', 'op' => 'truthy']
+     *   "!propName"           → ['prop' => 'propName', 'op' => 'falsy']
      *   "propName == 'val'"   → ['prop' => 'propName', 'op' => '==', 'value' => 'val']
      *   "propName != 'val'"   → ['prop' => 'propName', 'op' => '!=', 'value' => 'val']
      */
@@ -675,6 +760,10 @@ class TemplateParser
         // Equality/inequality comparison
         if (preg_match("/^(\w+)\s*(==|!=)\s*'([^']*)'$/", $vIf, $m)) {
             return ['prop' => $m[1], 'op' => $m[2], 'value' => $m[3]];
+        }
+        // Negation check: !propName
+        if (preg_match('/^!(\w+)$/', $vIf, $m)) {
+            return ['prop' => $m[1], 'op' => 'falsy'];
         }
         // Simple truthy check (non-empty property)
         if (preg_match('/^(\w+)$/', $vIf)) {
@@ -753,6 +842,17 @@ class TemplateParser
 
             case 'UnknownNode':
                 $result['tagName'] = $node->tagName;
+                break;
+
+            case 'ComponentRefNode':
+                $result['tagName'] = $node->tagName;
+                $result['componentFile'] = $node->componentFile;
+                $result['props'] = $node->props;
+                $result['selfClosing'] = $node->selfClosing;
+                if (count($node->slotChildren) > 0) {
+                    $result['slotChildren'] = array_map([$this, 'astToArray'], $node->slotChildren);
+                }
+                if ($node->vIf !== '') $result['vIf'] = $node->vIf;
                 break;
         }
 

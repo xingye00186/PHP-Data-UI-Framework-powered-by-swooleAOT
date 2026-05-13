@@ -5,17 +5,19 @@
  * Usage: php tests/sfc-compiler-test.php
  * 
  * Covers M1 acceptance criteria:
- *   1. Template parser: Calculator.vue → AST
+ *   1. Template parser: App.vue → AST
  *   2. CSS mappings: hexToBgr, borderColor, parseStyleBlock, 8+ properties
  *   3. AOT validator: filename dots, const arrays, variable property, variable method, PHP8 functions
  *   4. Code generation: layout output matches expected values
  *   5. Error reporting: line numbers in parse errors
  */
 
-require_once __DIR__ . '/../tools/compiler/ast-nodes.php';
-require_once __DIR__ . '/../tools/compiler/css-mappings.php';
-require_once __DIR__ . '/../tools/compiler/template-parser.php';
-require_once __DIR__ . '/../tools/compiler/aot-validator.php';
+require_once __DIR__ . '/../framework/compiler/ast-nodes.php';
+require_once __DIR__ . '/../framework/compiler/css-mappings.php';
+require_once __DIR__ . '/../framework/compiler/template-parser.php';
+require_once __DIR__ . '/../framework/compiler/aot-validator.php';
+require_once __DIR__ . '/../framework/compiler/component-registry.php';
+require_once __DIR__ . '/../framework/compiler/component-resolver.php';
 
 $passed = 0;
 $failed = 0;
@@ -84,7 +86,7 @@ test('borderColor: clamps at 255', function () {
     assert($border === 16777215, "Expected 16777215, got $border");
 });
 
-test('parseStyleBlock: extracts 8 classes from Calculator.vue style', function () {
+test('parseStyleBlock: extracts 8 classes from App.vue style', function () {
     $styles = ".app-bg { background: #1e1e1e; }\n.display-bg { background: #2d2d2d; }\n"
             . ".expr-text { font-size: 16px; color: #969696; }\n"
             . ".display-text { font-size: 32px; color: #ffffff; font-weight: bold; }\n"
@@ -111,25 +113,45 @@ test('PROPERTY_MAP: supports 8+ CSS properties', function () {
 // ============================================================
 echo "\n--- 2. Template Parser ---\n";
 
-test('Parser: parses full Calculator.vue template correctly', function () {
-    $template = file_get_contents(__DIR__ . '/../src/Calculator.vue');
+test('Parser: parses full App.vue template correctly', function () {
+    $template = file_get_contents(__DIR__ . '/../apps/calculator/App.vue');
     // Extract template block
     preg_match('#<template[^>]*>(.*?)</template>#s', $template, $m);
     $tpl = $m[1];
     
-    $parser = new TemplateParser();
+    // Set up component registry so all child components are recognized
+    $registry = new ComponentRegistry();
+    $dir = __DIR__ . '/../apps/calculator';
+    $registry->load([
+        'display-panel' => './components/DisplayPanel.vue',
+        'num-pad'       => './components/NumPad.vue',
+        'about-dialog'  => './components/AboutDialog.vue',
+    ], $dir);
+    
+    $parser = new TemplateParser($registry);
     $app = $parser->parse($tpl);
     $errors = $parser->getErrors();
     
     assert(count($errors) === 0, "Expected 0 errors, got " . count($errors) . ": " . implode('; ', $errors));
     assert($app->width === 328, "App width should be 328");
     assert($app->height === 420, "App height should be 420");
-    assert(count($app->children) === 5, "Expected 5 children (2 rects + 2 texts + 1 grid)");
+    assert(count($app->children) === 6, "Expected 6 children (rect + 3 components + text + grid), got " . count($app->children));
     
-    // Check grid has 18 buttons
-    $grid = $app->children[4];
-    assert($grid instanceof GridNode, "5th child should be GridNode");
-    assert(count($grid->buttons) === 18, "Grid should have 18 buttons");
+    // Check display-panel is a ComponentRefNode
+    $comp = $app->children[1];
+    assert($comp instanceof ComponentRefNode, "2nd child should be ComponentRefNode, got " . get_class($comp));
+    assert($comp->tagName === 'display-panel', "Component tag should be display-panel");
+    
+    // Check num-pad is a ComponentRefNode
+    $numPad = $app->children[3];
+    assert($numPad instanceof ComponentRefNode, "4th child should be ComponentRefNode (num-pad)");
+    assert($numPad->tagName === 'num-pad', "Component tag should be num-pad");
+    assert($numPad->vIf === '!showDialog', "num-pad should have v-if='!showDialog', got '{$numPad->vIf}'");
+    
+    // Check about-dialog is a ComponentRefNode  
+    $about = $app->children[5];
+    assert($about instanceof ComponentRefNode, "6th child should be ComponentRefNode (about-dialog)");
+    assert($about->tagName === 'about-dialog', "Component tag should be about-dialog");
 });
 
 test('Parser: line numbers are tracked', function () {
@@ -212,7 +234,7 @@ test('Parser: AST dump produces valid JSON', function () {
 echo "\n--- 3. AST → Layout Lowering ---\n";
 
 test('lowerToLayout: produces correct elements + buttons arrays', function () {
-    $template = file_get_contents(__DIR__ . '/../src/Calculator.vue');
+    $template = file_get_contents(__DIR__ . '/../apps/calculator/App.vue');
     preg_match('#<template[^>]*>(.*?)</template>#s', $template, $m);
     $tpl = $m[1];
     
@@ -220,12 +242,63 @@ test('lowerToLayout: produces correct elements + buttons arrays', function () {
     $styles = $m[1] ?? '';
     
     $classStyles = CssMappings::parseStyleBlock($styles);
-    $parser = new TemplateParser();
+    
+    // Set up component registry and parse
+    $registry = new ComponentRegistry();
+    $dir = __DIR__ . '/../apps/calculator';
+    $registry->load([
+        'display-panel' => './components/DisplayPanel.vue',
+        'num-pad'       => './components/NumPad.vue',
+        'about-dialog'  => './components/AboutDialog.vue',
+    ], $dir);
+    
+    $parser = new TemplateParser($registry);
     $app = $parser->parse($tpl);
+    
+    // Resolve component refs inline (inline DisplayPanel)
+    $resolvedChildren = [];
+    foreach ($app->children as $child) {
+        if ($child instanceof ComponentRefNode) {
+            $childSource = file_get_contents($child->componentFile);
+            preg_match('#<template[^>]*>(.*?)</template>#s', $childSource, $cm);
+            $childTpl = $cm[1];
+            
+            // Merge child styles
+            preg_match('#<style[^>]*>(.*?)</style>#s', $childSource, $sm);
+            if (!empty($sm[1])) {
+                $childCss = CssMappings::parseStyleBlock($sm[1]);
+                foreach ($childCss as $cls => $style) {
+                    if (!isset($classStyles[$cls])) {
+                        $classStyles[$cls] = $style;
+                    }
+                }
+            }
+            
+            $childParser = new TemplateParser();
+            $childAst = $childParser->parse($childTpl);
+            
+            $offsetX = (int)($child->props['x'] ?? 0);
+            $offsetY = (int)($child->props['y'] ?? 0);
+            
+            foreach ($childAst->children as $childNode) {
+                applyOffset($childNode, $offsetX, $offsetY);
+                applyPropBindings($childNode, $child->props);
+                // v5 M3: propagate v-if from component ref to inlined children
+                if ($child->vIf !== '' && $childNode->vIf === '') {
+                    $childNode->vIf = $child->vIf;
+                }
+                $resolvedChildren[] = $childNode;
+            }
+        } else {
+            $resolvedChildren[] = $child;
+        }
+    }
+    $app->children = $resolvedChildren;
+    
     $layout = $parser->lowerToLayout($app, $classStyles);
     
-    assert(count($layout['elements']) === 4, "Should have 4 elements");
-    assert(count($layout['buttons']) === 18, "Should have 18 buttons");
+    assert(count($layout['elements']) === 10, "should have 10 elements, got " . count($layout['elements']));
+    assert(count($layout['buttons']) === 20, "Should have 20 buttons (18 numpad + 1 ? + 1 Close), got " . count($layout['buttons']));
     
     // Check first button coordinates
     $btnC = $layout['buttons'][0];
@@ -242,19 +315,19 @@ test('lowerToLayout: produces correct elements + buttons arrays', function () {
 // ============================================================
 echo "\n--- 4. AOT Validator ---\n";
 
-test('AotValidator: Calculator.gen.php passes', function () {
+test('AotValidator: App.gen.php passes', function () {
     $v = new AotValidator();
-    $code = "<?php\nclass Calculator extends ReactiveComponent {}\n";
-    $result = $v->validate($code, 'Calculator.gen.php');
-    assert($result === true, "Calculator.gen.php should pass validation");
+    $code = "<?php\nclass App extends ReactiveComponent {}\n";
+    $result = $v->validate($code, 'App.gen.php');
+    assert($result === true, "App.gen.php should pass validation");
     assert(count($v->getErrors()) === 0, "Should have 0 errors: " . implode('; ', $v->getErrors()));
 });
 
-test('AotValidator: CalculatorLayout_gen.php passes', function () {
+test('AotValidator: AppLayout_gen.php passes', function () {
     $v = new AotValidator();
     $code = "<?php\nfunction getLayout(): array { return []; }\n";
-    $result = $v->validate($code, 'CalculatorLayout_gen.php');
-    assert($result === true, "CalculatorLayout_gen.php should pass");
+    $result = $v->validate($code, 'AppLayout_gen.php');
+    assert($result === true, "AppLayout_gen.php should pass");
 });
 
 test('AotValidator: rejects multi-dot filename stem', function () {
@@ -301,9 +374,9 @@ test('AotValidator: warns on str_contains (PHP8 only)', function () {
 // ============================================================
 echo "\n--- 5. Full Pipeline Integration ---\n";
 
-test('Integration: compile Calculator.vue and verify output consistency', function () {
+test('Integration: compile App.vue and verify output consistency', function () {
     // Run the compiler programmatically (simulate CLI)
-    $vueFile = __DIR__ . '/../src/Calculator.vue';
+    $vueFile = __DIR__ . '/../apps/calculator/App.vue';
     $source = file_get_contents($vueFile);
     $dir = dirname(realpath($vueFile));
     $baseName = pathinfo($vueFile, PATHINFO_FILENAME);
@@ -321,20 +394,67 @@ test('Integration: compile Calculator.vue and verify output consistency', functi
     
     // Step 2: Parse styles
     $classStyles = CssMappings::parseStyleBlock($styles);
-    assert(count($classStyles) === 8, "Should parse 8 CSS classes");
+    assert(count($classStyles) === 5, "Should parse 5 CSS classes from App.vue style");
     
-    // Step 3: Parse template → AST  
-    $parser = new TemplateParser();
+    // Step 3: Parse template → AST (with ComponentRegistry)
+    $registry = new ComponentRegistry();
+    $registry->load([
+        'display-panel' => './components/DisplayPanel.vue',
+        'num-pad'       => './components/NumPad.vue',
+        'about-dialog'  => './components/AboutDialog.vue',
+    ], $dir);
+    
+    $parser = new TemplateParser($registry);
     $app = $parser->parse($template);
     $errors = $parser->getErrors();
     assert(count($errors) === 0, "Should have 0 parse errors: " . implode('; ', $errors));
     
-    // Step 4: AST → layout arrays
-    $layout = $parser->lowerToLayout($app, $classStyles);
-    assert(count($layout['elements']) === 4, "Should have 4 layout elements");
-    assert(count($layout['buttons']) === 18, "Should have 18 layout buttons");
+    // Step 4: Resolve component references (inline DisplayPanel)
+    $resolvedChildren = [];
+    foreach ($app->children as $child) {
+        if ($child instanceof ComponentRefNode) {
+            $childSource = file_get_contents($child->componentFile);
+            preg_match('#<template[^>]*>(.*?)</template>#s', $childSource, $cm);
+            $childTpl = $cm[1];
+            
+            // Merge child styles
+            preg_match('#<style[^>]*>(.*?)</style>#s', $childSource, $sm);
+            if (!empty($sm[1])) {
+                $childCss = CssMappings::parseStyleBlock($sm[1]);
+                foreach ($childCss as $cls => $style) {
+                    if (!isset($classStyles[$cls])) {
+                        $classStyles[$cls] = $style;
+                    }
+                }
+            }
+            
+            $childParser = new TemplateParser();
+            $childAst = $childParser->parse($childTpl);
+            
+            $offsetX = (int)($child->props['x'] ?? 0);
+            $offsetY = (int)($child->props['y'] ?? 0);
+            
+            foreach ($childAst->children as $childNode) {
+                applyOffset($childNode, $offsetX, $offsetY);
+                applyPropBindings($childNode, $child->props);
+                // v5 M3: propagate v-if from component ref to inlined children
+                if ($child->vIf !== '' && $childNode->vIf === '') {
+                    $childNode->vIf = $child->vIf;
+                }
+                $resolvedChildren[] = $childNode;
+            }
+        } else {
+            $resolvedChildren[] = $child;
+        }
+    }
+    $app->children = $resolvedChildren;
     
-    // Step 5: Simulate code generation output
+    // Step 5: AST → layout arrays
+    $layout = $parser->lowerToLayout($app, $classStyles);
+    assert(count($layout['elements']) === 10, "Should have 10 layout elements, got " . count($layout['elements']));
+    assert(count($layout['buttons']) === 20, "Should have 20 layout buttons (18 numpad + 1 ? + 1 Close), got " . count($layout['buttons']));
+    
+    // Step 6: Simulate code generation output
     $buttonsExport = var_export($layout['buttons'], true);
     $elementsExport = var_export($layout['elements'], true);
     
@@ -344,13 +464,152 @@ test('Integration: compile Calculator.vue and verify output consistency', functi
     
     $classCode = "<?php\nuse native_types;\n\nclass $baseName extends ReactiveComponent {\n$script\n}\n";
     
-    // Step 6: AOT validation
+    // Step 7: AOT validation
     $v = new AotValidator();
     $layoutOk = $v->validate($layoutCode, "$baseName" . "Layout_gen.php");
     $classOk = $v->validate($classCode, "$baseName.gen.php");
     
     assert($layoutOk, "Layout code should pass AOT validation: " . implode('; ', $v->getErrors()));
     assert($classOk, "Class code should pass AOT validation: " . implode('; ', $v->getErrors()));
+});
+
+// ============================================================
+// 6. v5 M2: Component Ecosystem Tests
+// ============================================================
+echo "\n--- 6. v5 M2: Component Ecosystem ---\n";
+
+test('ComponentRegistry: resolves registered tag to file path', function () {
+    $registry = new ComponentRegistry();
+    $dir = __DIR__ . '/../apps/calculator';
+    $registry->load(['test-comp' => './components/DisplayPanel.vue'], $dir);
+    
+    $resolved = $registry->resolve('test-comp');
+    $expected = realpath($dir . '/components/DisplayPanel.vue');
+    assert($resolved === $expected, "Should resolve to $expected, got $resolved");
+    assert($registry->isComponent('test-comp') === true, "Should be a component");
+    assert($registry->isComponent('unknown') === false, "Should not be a component");
+});
+
+test('ComponentRegistry: returns null for unknown tag', function () {
+    $registry = new ComponentRegistry();
+    assert($registry->resolve('no-such-component') === null, "Should return null");
+});
+
+test('Parser with registry: component tag → ComponentRefNode', function () {
+    $registry = new ComponentRegistry();
+    $dir = __DIR__ . '/../apps/calculator';
+    $registry->load(['my-panel' => './components/DisplayPanel.vue'], $dir);
+    
+    $tpl = '<app title="Test" width="100" height="100"><my-panel x="0" y="10" :value="display" /></app>';
+    $parser = new TemplateParser($registry);
+    $app = $parser->parse($tpl);
+    $errors = $parser->getErrors();
+    
+    assert(count($errors) === 0, "Should have 0 errors, got: " . implode('; ', $errors));
+    assert(count($app->children) === 1, "Should have 1 child");
+    $node = $app->children[0];
+    assert($node instanceof ComponentRefNode, "Should be ComponentRefNode, got " . get_class($node));
+    assert($node->tagName === 'my-panel', "tagName should be my-panel");
+    assert($node->selfClosing === true, "Should be self-closing");
+    assert(isset($node->props['x']), "Should have x prop");
+    assert($node->props['x'] === '0', "x prop should be '0'");
+    assert(isset($node->props[':value']), "Should have :value prop");
+});
+
+test('Parser without registry: unknown tag still → UnknownNode', function () {
+    $tpl = '<app title="Test" width="100" height="100"><mystery-tag /></app>';
+    $parser = new TemplateParser(); // no registry
+    $app = $parser->parse($tpl);
+    $errors = $parser->getErrors();
+    
+    assert(count($errors) >= 1, "Should report unknown tag error");
+    assert($app->children[0] instanceof UnknownNode, "Should be UnknownNode");
+});
+
+test('Parser: component tag with slot children', function () {
+    $registry = new ComponentRegistry();
+    $dir = __DIR__ . '/../apps/calculator';
+    $registry->load(['wrapper' => './components/DisplayPanel.vue'], $dir);
+    
+    $tpl = '<app title="Test" width="200" height="200"><wrapper x="0" y="0"><text x="5" y="5" :bind="msg" class="inner" /></wrapper></app>';
+    $parser = new TemplateParser($registry);
+    $app = $parser->parse($tpl);
+    $errors = $parser->getErrors();
+    
+    assert(count($errors) === 0, "Should have 0 errors");
+    $node = $app->children[0];
+    assert($node instanceof ComponentRefNode, "Should be ComponentRefNode");
+    assert(count($node->slotChildren) === 1, "Should have 1 slot child");
+    assert($node->slotChildren[0] instanceof TextNode, "Slot child should be TextNode");
+});
+
+test('resolveComponentRefs: inlines child component layout', function () {
+    // Create a minimal test setup with a child component AST
+    $childApp = new AppNode('Child', 100, 50, 1);
+    $childApp->children[] = new RectNode(0, 0, 100, 50, 'child-bg', 1);
+    
+    $app = new AppNode('Parent', 200, 100, 1);
+    $compNode = new ComponentRefNode('child', '/fake/path.vue', ['x' => '10', 'y' => '20'], [], true, 2);
+    $app->children[] = $compNode;
+    
+    // We can't test resolveComponentRefs directly without a file, but we can test the helpers
+    // Test applyOffset
+    $rect = new RectNode(5, 5, 50, 50, 'bg', 1);
+    applyOffset($rect, 10, 20);
+    assert($rect->x === 15, "Rect x should be 15 after offset (5+10)");
+    assert($rect->y === 25, "Rect y should be 25 after offset (5+20)");
+});
+
+test('applyOffset: correctly offsets RectNode', function () {
+    $rect = new RectNode(10, 20, 30, 40, 'cls', 1);
+    applyOffset($rect, 5, 8);
+    assert($rect->x === 15, "x: 10+5=15");
+    assert($rect->y === 28, "y: 20+8=28");
+    // w, h should not change
+    assert($rect->w === 30, "width should not change");
+    assert($rect->h === 40, "height should not change");
+});
+
+test('applyOffset: correctly offsets TextNode', function () {
+    $text = new TextNode(5, 10, 'val', 'cls', 'left', 100, 5, 1);
+    applyOffset($text, 3, 7);
+    assert($text->x === 8, "x: 5+3=8");
+    assert($text->y === 17, "y: 10+7=17");
+    assert($text->containerX === 8, "containerX: 5+3=8");
+});
+
+test('applyOffset: correctly offsets GridNode', function () {
+    $grid = new GridNode(10, 20, 4, 5, 80, 60, 4, 1);
+    applyOffset($grid, 15, 25);
+    assert($grid->x === 25, "x: 10+15=25");
+    assert($grid->y === 45, "y: 20+25=45");
+});
+
+test('applyPropBindings: maps :prop → child :bind', function () {
+    $text = new TextNode(0, 0, 'value', 'cls', 'left', 0, 0, 1);
+    // Parent has :value="displayResult" → child's bind="value" should become bind="displayResult"
+    applyPropBindings($text, [':value' => 'displayResult']);
+    assert($text->bind === 'displayResult', "bind should be displayResult, got {$text->bind}");
+});
+
+test('applyPropBindings: no :prop prefix → no change', function () {
+    $text = new TextNode(0, 0, 'unchanged', 'cls', 'left', 0, 0, 1);
+    applyPropBindings($text, ['x' => '10', 'y' => '20']); // static props only
+    assert($text->bind === 'unchanged', "bind should remain unchanged");
+});
+
+test('AotValidator: validateNestingDepth accepts depth 0 and 1', function () {
+    $v = new AotValidator();
+    assert($v->validateNestingDepth(0, 'root') === true, "Depth 0 should pass");
+    assert($v->validateNestingDepth(1, 'child') === true, "Depth 1 should pass");
+});
+
+test('AotValidator: validateNestingDepth rejects depth > 1', function () {
+    $v = new AotValidator();
+    assert($v->validateNestingDepth(2, 'grandchild') === false, "Depth 2 should fail");
+    $errors = $v->getErrors();
+    assert(count($errors) >= 1, "Should have nesting error");
+    assert(strpos($errors[0], 'exceeds maximum depth') !== false, "Error should mention depth");
 });
 
 // ============================================================

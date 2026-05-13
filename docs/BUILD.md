@@ -8,18 +8,29 @@
 
 ## 快速开始
 
-### 方式 1：一键构建（推荐）
+### 方式 1：应用编排器（推荐）
 
-在 Windows 文件管理器中**双击 `build.bat`**，自动完成 SFC 编译 → AOT 编译 → 打包全部三步。
+双击框架根目录的 **`main_build.bat`**，自动扫描 `apps/` 下的应用，列出后选择构建。编译完成后回到选择菜单，可继续构建其他应用，输入 `q` 退出。
 
-也可以在 cmd.exe 中运行：
+```
+vue-calc/
+├── main_build.bat    ← [编排器] 扫描 apps/，循环选择并构建
+├── build.bat         ← [构建器] 编译整个框架 (含所有 apps/)
+└── apps/
+    └── calculator/
+        └── build.bat ← [自动生成] 由 main_build.bat 按需创建
+```
+
+### 方式 2：直接构建
+
+双击 **`build.bat`** 或命令行运行：
 
 ```cmd
-cd /d F:\work\swoole_compiler\examples\vue-calc
+cd /d vue-calc
 build.bat
 ```
 
-### 方式 2：MSYS2 / Git Bash 手动构建
+### 方式 3：MSYS2 / Git Bash 手动构建
 
 由于 MSYS2 的路径自动转换与 `cmd //c` 不兼容，需要在 bash 中手动执行：
 
@@ -37,19 +48,19 @@ export INCLUDE="C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\T
 export LIB="C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.50.35717\\lib\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0\\ucrt\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0\\um\\x64"
 
 # ---- 第二步：SFC 编译器 (Vue → .gen.php) ----
-cd "F:/work/swoole_compiler/examples/vue-calc"
-"F:/work/swoole_compiler/php.exe" tools/sfc-compiler.php src/Calculator.vue
+cd "<框架根目录>"   # 即 build.bat 所在目录
+"<仓库根>/php.exe" framework/sfc-compiler.php apps/calculator/Calculator.vue
 
 # ---- 第三步：AOT 编译器 (PHP → exe) ----
-cd "F:/work/swoole_compiler"
-./swoole_compiler.exe examples/vue-calc/project.yml -f
+cd "<仓库根>"       # 框架根的上两级
+./swoole_compiler.exe <框架相对路径>/project.yml -f
 
-# ---- 第四步：打包 (exe + DLL → bin/) ----
-cd "F:/work/swoole_compiler/examples/vue-calc"
-mkdir -p bin
-cp "F:/work/swoole_compiler/vue_calc.exe" bin/
-cp "F:/work/swoole_compiler/php8ts.dll" bin/
-cp "F:/work/swoole_compiler/phpx.dll" bin/
+# ---- 第四步：打包 (exe + DLL → apps/calculator/bin/) ----
+cd "<框架根目录>"
+mkdir -p apps/calculator/bin
+cp "<仓库根>/vue_calc.exe" apps/calculator/bin/
+cp "<仓库根>/php8ts.dll" apps/calculator/bin/
+cp "<仓库根>/phpx.dll" apps/calculator/bin/
 ```
 
 ---
@@ -57,24 +68,28 @@ cp "F:/work/swoole_compiler/phpx.dll" bin/
 ## 构建管道
 
 ```
-Calculator.vue ──→ [SFC 编译器] ──→ gen/*.gen.php ──→ [AOT 编译器] ──→ vue_calc.exe ──→ [打包] ──→ bin/
- (开发者编写)     (PHP CLI 预处理)    (纯 PHP 代码)    (PHP→C++→MSVC→exe)           (exe + DLL)
+Calculator.vue ──→ [SFC 编译器] ──→ gen/*.gen.php ──→ [AOT 编译器] ──→ vue_calc.exe ──→ [打包] ──→ apps/calculator/bin/
+ (apps/calculator/)    (含嵌套组件解析)    (apps/calculator/gen/) (PHP→C++→MSVC→exe)              (exe + DLL)
+                      ↳ 读取 project.yml
+                         组件注册表 (v5 M2)
 ```
 
 ### Step 1: SFC 编译器
 
 | 项目 | 说明 |
 |------|------|
-| 命令 | `php tools/sfc-compiler.php src/Calculator.vue` |
-| 输入 | `src/Calculator.vue`（template + script + style 三块） |
-| 输出 | `gen/Calculator.gen.php`、`gen/CalculatorLayout_gen.php` |
-| 特性 | 标准 PHP CLI 脚本，不经过 AOT，替代运行时编译 |
+| 命令 | `php framework/sfc-compiler.php apps/calculator/Calculator.vue` |
+| 输入 | `apps/calculator/Calculator.vue`（template + script + style 三块）+ 嵌套组件 |
+| 组件注册 | SFC 编译器自动读取同目录 `apps/calculator/project.yml` 中的 `components` 映射 |
+| 输出 | `apps/calculator/gen/Calculator.gen.php`、`apps/calculator/gen/CalculatorLayout_gen.php` |
+| 特性 | 标准 PHP CLI 脚本，不经过 AOT；支持嵌套组件解析与布局内联 (v5 M2) |
 
 ### Step 2: AOT 编译器
 
 | 项目 | 说明 |
 |------|------|
-| 命令 | `swoole_compiler.exe project.yml -f` |
+| 命令 | `swoole_compiler.exe project.yml -f` (从 REPO_ROOT 执行) |
+| 入口 | `apps/calculator/main.php` 中的 `main()` 函数 (project.yml 通过 `./apps/calculator` 引入) |
 | 输入 | project.yml 指定的所有 sources |
 | 子步骤 | prepare → convert → compile (MSVC cl.exe) → link |
 | 产物 | `vue_calc.exe`（~240KB，PE32+ x64 原生可执行文件） |
@@ -133,10 +148,10 @@ MSVC 编译器环境未初始化。双击 build.bat 会自动调用 vcvarsall.ba
 
 ### Q: SFC 编译器报错？
 
-检查 Calculator.vue 是否包含完整的三个块：
-- `<template>` ... `</template>`
-- `<script lang="php">` ... `</script>`
-- `<style>` ... `</style>`
+检查以下项目：
+- Calculator.vue 是否包含完整的三个块：`<template>` / `<script lang="php">` / `<style>`
+- 嵌套组件 (`<display-panel>` 等) 对应的 `.vue` 文件是否存在于 `components/` 目录
+- `apps/calculator/project.yml` 中 `components` 注册表是否正确
 
 ### Q: AOT 编译器报错？
 
@@ -153,45 +168,82 @@ MSVC 编译器环境未初始化。双击 build.bat 会自动调用 vcvarsall.ba
 
 这是 MSYS2 的已知限制 (PATH 转换问题)。请使用上面"方式 2"的手动构建命令。
 
+### Q: 根目录 main.php 去哪了？开发时如何运行？
+
+根级 `main.php` 已移除。原因：AOT 兼容性要求所有代码必须在 function 内，`require_once` 在顶层属游离代码。
+
+- **构建**：双击 `main_build.bat`（框架根）选择应用；或直接双击 `build.bat`
+- **开发**：`php apps/calculator/main.php`
+
+### Q: main_build.bat 是什么？
+
+框架根的应用构建编排器。扫描 `apps/` 下所有含 `project.yml` 的应用，为缺失 `build.bat` 的应用自动生成构建脚本，列出应用供选择并启动构建。
+
+所有路径基于 `%~dp0` 相对计算，框架整体迁移后仍然有效。
+
 ### Q: 构建完成后产物在哪？
 
-**`bin/`** 目录（在项目目录下），包含完整的可分发包：
+**`apps/<应用名>/bin/`** 目录下（每个应用拥有独立的可分发包）：
 
 ```
-bin/
+apps/calculator/bin/
 ├── vue_calc.exe   ← 主程序
 ├── php8ts.dll     ← PHP 运行时
 └── phpx.dll       ← PHPX 桥接库
 ```
 
-直接运行 `bin\vue_calc.exe` 即可，无需安装 PHP。
+直接运行 `apps\calculator\bin\vue_calc.exe` 即可，无需安装 PHP。
 
 ### Q: 为什么需要打包 DLL？
 
 AOT 编译器采用动态链接（而非 Go 那样的纯静态编译），以减小 exe 体积。因此 exe 运行需要 PHP 运行时库。参照最佳实践，将三者打包在一起即可独立分发。
+
+### Q: 中文显示乱码怎么办？
+
+`.bat` 文件使用 UTF-8 编码，脚本在首个 `echo` 输出前自动执行 `chcp 65001` 切换到 UTF-8 代码页。如果仍有乱码，在运行前手动执行：
+
+```cmd
+chcp 65001
+```
+
+然后运行 target build.bat。Windows Terminal 默认支持 UTF-8，推荐使用。
 
 ---
 
 ## 文件说明
 
 ```
-examples/vue-calc/
-├── build.bat                  ← [本文件] 一键构建脚本 (3步)
-├── project.yml                ← AOT 编译配置
-├── main.php                   ← 程序入口
-├── src/
+vue-calc/                          ← 框架根 (可整体迁移)
+├── main_build.bat              ← [编排器] 扫描 apps/, 选择构建目标应用
+├── build.bat                   ← [构建器] 编译整个框架 (相对路径, 可迁移)
+├── project.yml                 ← AOT 编译配置 (入口: apps/calculator/main.php)
+├── framework/                 ← 可复用框架层 (v5 M2)
+│   ├── ReactiveComponent.php  ← 响应式组件基类
+│   ├── ChangeQueue.php        ← 变更队列 (环形缓冲)
+│   ├── BaseRenderer.php       ← 数据驱动渲染器基类
+│   ├── sfc-compiler.php       ← SFC 编译器入口
+│   └── compiler/              ← 编译器模块
+│       ├── template-parser.php
+│       ├── script-analyzer.php
+│       ├── css-mappings.php
+│       ├── ast-nodes.php
+│       ├── aot-validator.php
+│       ├── component-registry.php
+│       └── component-resolver.php
+├── apps/calculator/           ← 计算器应用层
+│   ├── main.php               ← [AOT 入口] 应用启动逻辑
+│   ├── CalcApp.php            ← 窗口/事件循环控制器
 │   ├── Calculator.vue         ← [源] SFC 单文件组件
-│   ├── ReactiveComponent.php  ← 响应式基类
-│   └── ChangeQueue.php        ← 变更队列
-├── gen/                       ← [自动生成] SFC 编译器输出
-│   ├── Calculator.gen.php
-│   └── CalculatorLayout_gen.php
-├── bin/                       ← [构建产物] 可分发包
-│   ├── vue_calc.exe           ← 计算器主程序 (~240KB)
-│   ├── php8ts.dll             ← PHP 8 运行时 (~11MB)
-│   └── phpx.dll               ← PHPX 桥接库 (~2MB)
-├── tools/
-│   └── sfc-compiler.php       ← SFC 编译器入口
+│   ├── project.yml            ← 应用级配置 (组件注册表, v5 M2)
+│   ├── components/
+│   │   └── DisplayPanel.vue   ← 可复用子组件 (v5 M2)
+│   ├── gen/                   ← [自动生成] SFC 编译器输出
+│   │   ├── Calculator.gen.php
+│   │   └── CalculatorLayout_gen.php
+│   └── bin/                   ← [构建产物] 可分发包 (每个 app 独立)
+│       ├── vue_calc.exe       ← 计算器主程序 (~240KB)
+│       ├── php8ts.dll         ← PHP 8 运行时 (~11MB)
+│       └── phpx.dll           ← PHPX 桥接库 (~2MB)
 ├── stub/
 │   └── vue_calc.stub.php      ← C++ 函数 PHP 声明
 ├── cpp/

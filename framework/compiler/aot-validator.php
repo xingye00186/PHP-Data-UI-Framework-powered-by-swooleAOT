@@ -121,6 +121,29 @@ class AotValidator
         return $this->warnings;
     }
 
+    // ============================================================
+    // v5 M2: Nesting depth check
+    // ============================================================
+
+    /**
+     * Validate that component nesting does not exceed the maximum allowed depth.
+     * v5 only supports 1 level of nesting (parent → child, not parent → child → grandchild).
+     * 
+     * @param int $depth  Current nesting depth (0 = root, 1 = first child, etc.)
+     * @param string $componentName  Component name for error message
+     * @return bool  true if depth is acceptable
+     */
+    public function validateNestingDepth(int $depth, string $componentName): bool
+    {
+        if ($depth > 1) {
+            $this->errors[] = "AOT: Component nesting exceeds maximum depth (1 level). " .
+                "'$componentName' is at depth $depth. " .
+                "v5 only supports parent→child nesting. Multi-level nesting is deferred to v6.";
+            return false;
+        }
+        return true;
+    }
+
     /**
      * Pretty-print validation results for CLI output.
      */

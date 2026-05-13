@@ -156,3 +156,46 @@ class UnknownNode extends TemplateNode
         $this->tagName = $tagName;
     }
 }
+
+/**
+ * v5 M2: Represents a child component reference in the template.
+ * 
+ * e.g., <display-panel x="0" y="80" :value="display" />
+ * 
+ * The sfc-compiler resolves these at compile-time by recursively
+ * compiling the referenced .vue file and inlining its layout elements.
+ */
+class ComponentRefNode extends TemplateNode
+{
+    /** Custom tag name, e.g. 'display-panel' */
+    public string $tagName;
+
+    /** Absolute path to the resolved .vue source file */
+    public string $componentFile;
+
+    /** Parsed attributes from the tag, e.g. ['x' => '0', 'y' => '80', ':value' => 'display'] */
+    public array $props;
+
+    /** Child nodes inside the component tag (slot content) */
+    /** @var TemplateNode[] */
+    public array $slotChildren;
+
+    /** Whether the tag was self-closing (<comp />) */
+    public bool $selfClosing;
+
+    public function __construct(
+        string $tagName,
+        string $componentFile,
+        array $props,
+        array $slotChildren,
+        bool $selfClosing,
+        int $line = 0
+    ) {
+        parent::__construct($line);
+        $this->tagName       = $tagName;
+        $this->componentFile = $componentFile;
+        $this->props         = $props;
+        $this->slotChildren  = $slotChildren;
+        $this->selfClosing   = $selfClosing;
+    }
+}

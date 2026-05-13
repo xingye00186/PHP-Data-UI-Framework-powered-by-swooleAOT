@@ -1,16 +1,17 @@
 <?php
 /**
- * SFC Compiler v4 — Vue-like Single File Component compiler for AOT desktop apps
+ * SFC Compiler v5 — Vue-like Single File Component compiler for AOT desktop apps
  * 
- * Usage: php tools/sfc-compiler.php src/Calculator.vue [--dump-ast]
+ * Usage: php framework/sfc-compiler.php apps/calculator/Calculator.vue [--dump-ast]
  * 
- * Architecture (M2 refactored):
+ * Architecture (v5 M2):
  *   1. Block Extraction:     template / script / style from .vue
  *   2. Style Parsing:        CSS class → GDI properties (via CssMappings)
- *   3. Template Parsing:     recursive descent → AST  (via TemplateParser)
- *   4. AST → Layout Arrays:  compile-time coordinate calculation + bindKeys
- *   5. AOT Validation:       check generated code before write (via AotValidator)
- *   6. Code Generation:      .gen.php ×2 output + auto dirty + auto getBindValue
+ *   3. Template Parsing:     recursive descent → AST  (via TemplateParser + ComponentRegistry)
+ *   4. Component Resolution: resolve <child-comp> refs, inline child layouts, apply offsets
+ *   5. AST → Layout Arrays:  compile-time coordinate calculation + bindKeys
+ *   6. AOT Validation:       check generated code before write (via AotValidator)
+ *   7. Code Generation:      .gen.php ×2 output + auto dirty + auto getBindValue
  * 
  * This tool runs OUTSIDE the AOT pipeline (standard PHP CLI).
  * Generated .gen.php files are consumed by the AOT compiler.
@@ -23,10 +24,154 @@ require_once $compilerDir . '/css-mappings.php';
 require_once $compilerDir . '/template-parser.php';
 require_once $compilerDir . '/aot-validator.php';
 require_once $compilerDir . '/script-analyzer.php';
+require_once $compilerDir . '/component-registry.php';
+require_once $compilerDir . '/component-resolver.php';
+
+// ============================================================
+// v5 M2: Helper — load component registry from project.yml
+// ============================================================
+function loadComponentRegistry(string $vueFile): ComponentRegistry
+{
+    $registry = new ComponentRegistry();
+    $appDir = dirname(realpath($vueFile));
+    $ymlFile = $appDir . DIRECTORY_SEPARATOR . 'project.yml';
+
+    if (!file_exists($ymlFile)) {
+        return $registry;
+    }
+
+    $yml = file_get_contents($ymlFile);
+    // Simple YAML parsing for the "components:" section
+    // Looks for:
+    //   components:
+    //     tag-name: ./path/to/Component.vue
+    if (preg_match('/^components:\s*$/m', $yml)) {
+        // Extract indented lines after "components:"
+        if (preg_match_all('/^  (\S+):\s*(.+)$/m', $yml, $matches, PREG_SET_ORDER)) {
+            $inComponents = false;
+            $config = [];
+            foreach (explode("\n", $yml) as $line) {
+                if (trim($line) === 'components:') {
+                    $inComponents = true;
+                    continue;
+                }
+                if ($inComponents) {
+                    // Stop at non-indented or empty section
+                    if ($line === '' || (strlen($line) > 0 && $line[0] !== ' ' && $line[0] !== "\t")) {
+                        if (strlen(trim($line)) > 0 && strpos($line, ':') !== false && $line[0] !== ' ') {
+                            $inComponents = false;
+                            continue;
+                        }
+                        if (strlen(trim($line)) === 0) {
+                            continue;
+                        }
+                        if ($line[0] !== ' ') {
+                            $inComponents = false;
+                            continue;
+                        }
+                    }
+                    if (preg_match('/^\s+(\S+):\s*(.+)$/', $line, $m)) {
+                        $config[$m[1]] = trim($m[2]);
+                    }
+                }
+            }
+            if (count($config) > 0) {
+                $warnings = $registry->load($config, $appDir);
+                foreach ($warnings as $w) {
+                    echo "  [WARN] ComponentRegistry: $w\n";
+                }
+            }
+        }
+    }
+
+    return $registry;
+}
+
+// ============================================================
+// v5 M2: Helper — resolve component references in AST (1 level)
+// ============================================================
+function resolveComponentRefs(AppNode $app, array &$classStyles, int $depth = 0): array
+{
+    $warnings = [];
+    $resolvedChildren = [];
+
+    foreach ($app->children as $child) {
+        if ($child instanceof ComponentRefNode) {
+            if ($depth >= 1) {
+                $warnings[] = "Line {$child->line}: Nested component <{$child->tagName}> exceeds maximum depth (1 level). Skipping.";
+                continue;
+            }
+
+            // Read child .vue file
+            $childSource = @file_get_contents($child->componentFile);
+            if ($childSource === false) {
+                $warnings[] = "Line {$child->line}: Cannot read component file: {$child->componentFile}";
+                continue;
+            }
+
+            // Extract blocks from child .vue
+            $childTemplate = '';
+            $childStyles = '';
+            if (preg_match('#<template[^>]*>(.*?)</template>#s', $childSource, $m)) {
+                $childTemplate = $m[1];
+            }
+            if (preg_match('#<style[^>]*>(.*?)</style>#s', $childSource, $m)) {
+                $childStyles = $m[1];
+            }
+
+            if ($childTemplate === '') {
+                $warnings[] = "Line {$child->line}: Component <{$child->tagName}> has no <template> block";
+                continue;
+            }
+
+            // Parse child styles → merge into parent classStyles
+            $childStyleWarnings = [];
+            $childClassStyles = CssMappings::parseStyleBlock($childStyles, $childStyleWarnings);
+            foreach ($childClassStyles as $cls => $style) {
+                if (!isset($classStyles[$cls])) {
+                    $classStyles[$cls] = $style;
+                }
+            }
+            foreach ($childStyleWarnings as $w) {
+                $warnings[] = "Component <{$child->tagName}> CSS: $w";
+            }
+
+            // Parse child template (no component registry — nesting > 1 rejected)
+            $childParser = new TemplateParser();
+            $childAst = $childParser->parse($childTemplate);
+
+            // Check for grandchild components (would be depth 2 — reject)
+            foreach ($childAst->children as $grandchild) {
+                if ($grandchild instanceof ComponentRefNode) {
+                    $warnings[] = "Line {$child->line}: Component <{$child->tagName}> contains nested component <{$grandchild->tagName}>. v5 only supports 1 level of nesting.";
+                }
+            }
+
+            // Apply coordinate offset and prop bindings to each child node
+            $offsetX = (int)($child->props['x'] ?? 0);
+            $offsetY = (int)($child->props['y'] ?? 0);
+
+            foreach ($childAst->children as $childNode) {
+                applyOffset($childNode, $offsetX, $offsetY);
+                applyPropBindings($childNode, $child->props);
+                // v5 M3: propagate v-if from component reference to inlined children
+                if ($child->vIf !== '' && $childNode->vIf === '') {
+                    $childNode->vIf = $child->vIf;
+                }
+                $resolvedChildren[] = $childNode;
+            }
+        } else {
+            $resolvedChildren[] = $child;
+        }
+    }
+
+    $app->children = $resolvedChildren;
+    return $warnings;
+}
 
 // ---- CLI ----
 if ($argc < 2) {
-    echo "Usage: php sfc-compiler.php <path/to/component.vue> [--dump-ast]\n";
+    echo "Usage: php framework/sfc-compiler.php <path/to/component.vue> [--dump-ast]\n";
     exit(1);
 }
 
@@ -41,14 +186,21 @@ if (!file_exists($vueFile)) {
 $source = file_get_contents($vueFile);
 $baseName = pathinfo($vueFile, PATHINFO_FILENAME);
 
-// Output to gen/ directory (relative to project root)
-$projectRoot = dirname(__DIR__);
-$outDir = $projectRoot . DIRECTORY_SEPARATOR . 'gen';
+// Output to gen/ directory relative to the .vue file
+$appDir = dirname(realpath($vueFile));
+$outDir = $appDir . DIRECTORY_SEPARATOR . 'gen';
 if (!is_dir($outDir)) {
     mkdir($outDir, 0755, true);
 }
 
-echo "SFC Compiler v4: $vueFile\n";
+// v5 M2: Load component registry from app's project.yml
+$componentRegistry = loadComponentRegistry($vueFile);
+$componentNames = array_keys($componentRegistry->all());
+if (count($componentNames) > 0) {
+    echo "SFC Compiler v5: $vueFile (components: " . implode(', ', $componentNames) . ")\n";
+} else {
+    echo "SFC Compiler v5: $vueFile\n";
+}
 
 // ============================================================
 // Step 1: Extract blocks (template / script / style)
@@ -57,9 +209,6 @@ $template = '';
 $script   = '';
 $styles   = '';
 $blockErrors = [];
-
-// Track line numbers for error reporting
-$lines = explode("\n", $source);
 
 if (preg_match('#<template[^>]*>(.*?)</template>#s', $source, $m)) {
     $template = $m[1];
@@ -101,9 +250,9 @@ foreach ($styleWarnings as $w) {
 }
 
 // ============================================================
-// Step 3: Parse template → AST (via TemplateParser)
+// Step 3: Parse template → AST (via TemplateParser + ComponentRegistry)
 // ============================================================
-$parser = new TemplateParser();
+$parser = new TemplateParser($componentRegistry);
 $app = $parser->parse($template);
 $parseErrors = $parser->getErrors();
 
@@ -124,6 +273,18 @@ if ($dumpAst) {
 }
 
 // ============================================================
+// v5 M2: Step 4 — Resolve component references (inline child layouts)
+// ============================================================
+$componentWarnings = resolveComponentRefs($app, $classStyles);
+if (count($componentWarnings) > 0) {
+    echo "\n=== Component Resolution Warnings (" . count($componentWarnings) . ") ===\n";
+    foreach ($componentWarnings as $w) {
+        echo "  [WARN] $w\n";
+    }
+    echo "===================================================\n\n";
+}
+
+// ============================================================
 // Step 4: AST → Layout Arrays (compiler-time coordinate calculation)
 // ============================================================
 $layout = $parser->lowerToLayout($app, $classStyles);
@@ -140,10 +301,10 @@ echo "  Handlers: " . count($handlerMap) . "\n";
 echo "  CondProps: " . count($condProps) . "\n";
 
 // ============================================================
-// Step 5: Generate output files
+// Step 6: Generate output files
 // ============================================================
 
-// --- Generate CalculatorLayout_gen.php ---
+// --- Generate Layout_gen.php ---
 $buttonsExport  = var_export($buttons, true);
 $elementsExport = var_export($elements, true);
 $appWidth  = $app->width;
@@ -152,7 +313,7 @@ $appHeight = $app->height;
 $layoutContent = <<<PHP
 <?php
 /**
- * AUTO-GENERATED by SFC Compiler v4 — DO NOT EDIT
+ * AUTO-GENERATED by SFC Compiler v5 — DO NOT EDIT
  * Source: $baseName.vue
  */
 
@@ -222,6 +383,13 @@ if (count($condProps) > 0) {
     }
     $evalConditionBody .= "            return false;\n";
     $evalConditionBody .= "        }\n";
+    // falsy check (negation) for each prop — v5 M3
+    $evalConditionBody .= "        if (\$op === 'falsy') {\n";
+    foreach ($condProps as $prop) {
+        $evalConditionBody .= "            if (\$prop === '$prop') return \$this->$prop ? false : true;\n";
+    }
+    $evalConditionBody .= "            return false;\n";
+    $evalConditionBody .= "        }\n";
     // == comparison for each prop
     $evalConditionBody .= "        if (\$op === '==') {\n";
     $evalConditionBody .= "            \$value = \$cond['value'];\n";
@@ -246,7 +414,7 @@ if (count($condProps) > 0) {
 $classContent = <<<PHP
 <?php
 /**
- * AUTO-GENERATED by SFC Compiler v4 — DO NOT EDIT
+ * AUTO-GENERATED by SFC Compiler v5 — DO NOT EDIT
  * Source: $baseName.vue
  */
 
@@ -279,7 +447,7 @@ $evalConditionBody
 PHP;
 
 // ============================================================
-// Step 6: AOT Validation (before writing to disk)
+// Step 7: AOT Validation (before writing to disk)
 // ============================================================
 $validator = new AotValidator();
 

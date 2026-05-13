@@ -1,42 +1,24 @@
 <template>
-  <app title="VueCalc - Reactive Data-Driven Calculator" width="328" height="420">
+  <app title="VueCalc" width="328" height="420">
     <!-- 应用背景 -->
     <rect x="0" y="0" w="328" h="420" class="app-bg" />
-    
-    <!-- 显示区域背景 -->
-    <rect x="4" y="4" w="320" h="72" class="display-bg" />
-    
-    <!-- 表达式文本（小号，左上角，灰色）- v4: 使用 v-model 双向绑定 + v-if 条件渲染 -->
+
+    <!-- 显示面板（子组件 DisplayPanel） -->
+    <display-panel x="4" y="4" :value="display" />
+
+    <!-- 表达式文本（小号，左上角，灰色） -->
     <text x="10" y="10" v-model="expression" v-if="expression" class="expr-text" align="left" />
-    
-    <!-- 显示值文本（大号，右对齐，白色粗体） -->
-    <text y="36" :bind="display" class="display-text" align="right" container-w="320" container-x="4" />
-    
-    <!-- 按钮网格 -->
-    <grid x="0" y="80" cols="4" rows="5" cell-w="80" cell-h="60" margin="2">
-      <btn row="0" col="0" label="C"  class="btn-func" @click="reset" />
-      <btn row="0" col="1" label="<-" class="btn-func" @click="backspace" />
-      <btn row="0" col="2" label="/"  class="btn-op"   @click="handleButton('/')" />
-      <btn row="0" col="3" label="*"  class="btn-op"   @click="handleButton('*')" />
-      
-      <btn row="1" col="0" label="7"  class="btn-num"  @click="handleButton('7')" />
-      <btn row="1" col="1" label="8"  class="btn-num"  @click="handleButton('8')" />
-      <btn row="1" col="2" label="9"  class="btn-num"  @click="handleButton('9')" />
-      <btn row="1" col="3" label="-"  class="btn-op"   @click="handleButton('-')" />
-      
-      <btn row="2" col="0" label="4"  class="btn-num"  @click="handleButton('4')" />
-      <btn row="2" col="1" label="5"  class="btn-num"  @click="handleButton('5')" />
-      <btn row="2" col="2" label="6"  class="btn-num"  @click="handleButton('6')" />
-      <btn row="2" col="3" label="+"  class="btn-op"   @click="handleButton('+')" />
-      
-      <btn row="3" col="0" label="1"  class="btn-num"  @click="handleButton('1')" />
-      <btn row="3" col="1" label="2"  class="btn-num"  @click="handleButton('2')" />
-      <btn row="3" col="2" label="3"  class="btn-num"  @click="handleButton('3')" />
-      <btn row="3" col="3" label="="  class="btn-eq"   @click="calculate" />
-      
-      <btn row="4" col="0" label="0"  class="btn-num"  @click="handleButton('0')" />
-      <btn row="4" col="1" label="."  class="btn-num"  @click="handleButton('.')" />
+
+    <!-- 数字键盘（子组件 NumPad） — 弹窗显示时隐藏 -->
+    <num-pad x="0" y="80" v-if="!showDialog" />
+
+    <!-- About 按钮（? 切换弹窗）—— 弹窗显示时隐藏 -->
+    <grid x="290" y="38" cols="1" rows="1" cell-w="30" cell-h="28" margin="0" v-if="!showDialog">
+      <btn row="0" col="0" label="?" class="btn-func" @click="toggleAboutDialog" />
     </grid>
+
+    <!-- 关于弹窗（子组件 AboutDialog） -->
+    <about-dialog x="0" y="0" />
   </app>
 </template>
 
@@ -59,6 +41,15 @@
 
     /** 是否已输入小数点 */
     public bool $hasDecimal = false;
+
+    /** 对话框状态 */
+    public bool $showDialog = false;
+
+    /** 对话框文本 */
+    public string $dialogTitle = 'About VueCalc';
+    public string $dialogContent = 'SFC Data-Driven Calculator';
+    public string $dialogVersion = 'Version 5.0 (M2)';
+    public string $closeHint = '';
 
     /** 重置计算器状态 */
     public function reset(): void
@@ -193,15 +184,19 @@
             $this->inputDigit($label);
         }
     }
+
+    /** 切换关于弹窗 */
+    public function toggleAboutDialog(): void
+    {
+        $this->showDialog = !$this->showDialog;
+        $this->dirty = true;
+    }
 </script>
 
 <style>
-.app-bg      { background: #1e1e1e; }
-.display-bg  { background: #2d2d2d; }
-.expr-text   { font-size: 16px; color: #969696; }
+.app-bg       { background: #1e1e1e; }
+.display-bg   { background: #2d2d2d; }
+.expr-text    { font-size: 16px; color: #969696; }
 .display-text { font-size: 32px; color: #ffffff; font-weight: bold; }
-.btn-num     { background: #323232; color: #ffffff; }
-.btn-op      { background: #ff9500; color: #ffffff; }
-.btn-eq      { background: #007aff; color: #ffffff; }
-.btn-func    { background: #505050; color: #ffffff; }
+.btn-func     { background: #505050; color: #ffffff; }
 </style>
