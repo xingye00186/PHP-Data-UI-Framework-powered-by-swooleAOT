@@ -163,6 +163,8 @@ function resolveComponentRefs(AppNode $app, array &$classStyles, int $depth = 0)
                 if ($child->isOverlay) {
                     $childNode->layer = $nextOverlayLayer;
                 }
+                // v5 M4: 标记组件边界 (group_id = 子组件 tagName)
+                $childNode->groupId = $child->tagName;
                 $resolvedChildren[] = $childNode;
             }
             // v5 M3: overlay component's children all processed, increment layer counter

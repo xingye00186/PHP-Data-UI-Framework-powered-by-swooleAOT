@@ -11,10 +11,10 @@ use native_types;
 abstract class ReactiveComponent
 {
     /** 全局变更队列 */
-    protected static ?ChangeQueue $queue = null;
+    protected ?ChangeQueue $queue = null;
 
     /** 当前组件标识 */
-    protected static string $componentId = '';
+    protected string $componentId = '';
 
     /** 脏标记: 是否需要重绘 */
     public bool $dirty = false;
@@ -22,13 +22,43 @@ abstract class ReactiveComponent
     /** 模板文件路径(可选) */
     public string $template = '';
 
+    /** v5 M4: group 级 dirty 追踪 */
+    protected array $dirtyGroups = [];
+
+    /** v5 M4: 是否需要全量重绘 (首帧/强制刷新) */
+    protected bool $fullDirty = true;
+
     public function __construct(?string $componentId = null)
     {
-        self::$componentId = $componentId ?? get_class($this);
+        $this->componentId = $componentId ?? get_class($this);
     }
 
-    public static function initShared(int $tableSize = 10240): void
+    public function initShared(int $tableSize = 10240): void
     {
-        self::$queue = new ChangeQueue();
+        $this->queue = new ChangeQueue();
+    }
+
+    /** v5 M4: 标记特定 group 为 dirty */
+    public function markGroupDirty(string $groupId): void
+    {
+        $this->dirtyGroups[$groupId] = true;
+        $this->dirty = true;
+    }
+
+    /** v5 M4: 标记全量 dirty (全部 group 重绘) */
+    public function markFullDirty(): void
+    {
+        $this->fullDirty = true;
+        $this->dirty = true;
+    }
+
+    /** v5 M4: 消费 dirty 状态 (渲染器调用后重置) */
+    public function consumeDirty(): array
+    {
+        $groups = $this->dirtyGroups;
+        $full = $this->fullDirty;
+        $this->dirtyGroups = [];
+        $this->fullDirty = false;
+        return ['full' => $full, 'groups' => $groups];
     }
 }

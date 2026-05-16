@@ -17,6 +17,9 @@ abstract class TemplateNode
     /** v5 M3: overlay layer number (0 = base layer) */
     public int $layer = 0;
 
+    /** v5 M4: component group identifier (default 'app' for top-level elements) */
+    public string $groupId = 'app';
+
     public function __construct(int $line = 0)
     {
         $this->line = $line;

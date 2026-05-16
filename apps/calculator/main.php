@@ -27,11 +27,11 @@ function main(): int
     echo "  Pipeline: .vue → SFC Compiler → .gen.php → AOT → .exe\n";
     echo "========================================\n\n";
 
-    // 1. 初始化响应式框架共享内存
-    ReactiveComponent::initShared(10240);
-
-    // 2. 创建应用组件 (SFC 编译生成的 ReactiveComponent 子类)
+    // 1. 创建应用组件 (SFC 编译生成的 ReactiveComponent 子类)
     $component = new App('MainApp');
+
+    // 2. 初始化响应式框架共享内存
+    $component->initShared(10240);
 
     // 3. 创建应用控制器并启动事件循环
     $app = new Application($component);

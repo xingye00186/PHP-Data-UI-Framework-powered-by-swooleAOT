@@ -87,6 +87,11 @@ class BaseRenderer
      */
     public function render(): void
     {
+        // v5 M4: 消费 dirty 状态 (当前仍全量重绘，为 v6 增量渲染做准备)
+        $dirtyInfo = $this->component->consumeDirty();
+        // $dirtyInfo['full'] = true 时全量重绘; 否则 $dirtyInfo['groups'] 记录脏 group
+        // 当前阶段: GDI 双缓冲要求全量绘制，group 信息仅作为元数据预留
+
         $hdc = vue_begin_paint($this->hWnd);
         $layout   = getLayout();
         $elements = $layout['elements'];

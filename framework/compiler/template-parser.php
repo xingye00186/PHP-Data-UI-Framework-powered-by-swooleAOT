@@ -573,6 +573,7 @@ class TemplateParser
                     'h'     => $child->h,
                     'color' => $style['bg'] ?? 0,
                     'layer' => $child->layer,
+                    'group_id' => $child->groupId,
                 ];
                 // v4 M2.5: v-if condition
                 if ($child->vIf !== '') {
@@ -592,6 +593,7 @@ class TemplateParser
                     'color'    => $style['fg'] ?? 0xFFFFFF,
                     'bold'     => $style['bold'] ?? 0,
                     'layer'    => $child->layer,
+                    'group_id' => $child->groupId,
                 ];
                 if ($child->hasContainer) {
                     $el['containerW'] = $child->containerW;
@@ -635,6 +637,7 @@ class TemplateParser
                         'handler' => $btn->handler,
                         'arg'     => $btn->arg,
                         'layer'   => $child->layer,
+                        'group_id' => $child->groupId,
                     ];
                     // v4 M2.5: v-if condition on button (or propagated from grid)
                     if ($btn->vIf !== '') {
