@@ -243,7 +243,7 @@ cd /d "%FRAMEWORK_ROOT%"
 set "SFC_EXIT=!errorlevel!"
 if !SFC_EXIT! neq 0 (
     echo.
-    echo [错误] SFC 编译失败 (错误码: !SFC_EXIT!)
+    echo [错误] SFC 编译失败 ^(错误码: !SFC_EXIT!^)
     goto :choose
 )
 
@@ -291,17 +291,17 @@ cd /d "%FRAMEWORK_ROOT%"
 set "AOT_EXIT=!errorlevel!"
 if !AOT_EXIT! neq 0 (
     echo.
-    echo [错误] AOT 编译失败 (错误码: !AOT_EXIT!)
+    echo [错误] AOT 编译失败 ^(错误码: !AOT_EXIT!^)
     echo.
     echo   常见原因:
     echo     1. MSVC ^(cl.exe^) 未找到
     echo        -^> 从 Developer Command Prompt for VS 运行本脚本
-    echo     2. 顶层游离代码 (require_once, include, 函数外的语句)
+    echo     2. 顶层游离代码 ^(require_once, include, 函数外的语句^)
     echo        -^> 所有代码必须在函数或类内部
     echo     3. 变量先使用后定义
     echo        -^> 确保变量有初始值
-    echo     4. 变量类型被改变 (int 变 string 等)
-    echo     5. 文件名含特殊字符 (仅允许 [a-zA-Z0-9_])
+    echo     4. 变量类型被改变 ^(int 变 string 等^)
+    echo     5. 文件名含特殊字符 ^(仅允许 [a-zA-Z0-9_]^)
     echo.
     goto :choose
 )
