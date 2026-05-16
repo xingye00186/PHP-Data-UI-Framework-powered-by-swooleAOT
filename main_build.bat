@@ -28,22 +28,39 @@ title SFC Framework - App Builder
 
 :: 框架根 (本文件所在目录)
 for %%a in ("%~dp0.") do set "FRAMEWORK_ROOT=%%~fa"
-:: 仓库根 (框架根的上两级)
-for %%a in ("%~dp0..\..") do set "REPO_ROOT=%%~fa"
+:: 父目录 (框架根的上一级)
+for %%a in ("%~dp0..") do set "PARENT_DIR=%%~fa"
 :: 应用目录
 set "APPS_DIR=%FRAMEWORK_ROOT%\apps"
 
-:: 编译器路径
-set "PHP_CLI=%REPO_ROOT%\php.exe"
-set "SWOOLE_COMPILER=%REPO_ROOT%\swoole_compiler.exe"
-set "DLL_PHP=%REPO_ROOT%\php8ts.dll"
-set "DLL_PHPX=%REPO_ROOT%\phpx.dll"
+:: 通配符查找 swoole_compile* 目录 (版本号会变, 使用通配符自动匹配)
+:: 优先在框架根目录内查找, 其次在父目录查找
+set "COMPILER_DIR="
+for /d %%d in ("%FRAMEWORK_ROOT%\swoole_compile*") do (
+    set "COMPILER_DIR=%%d"
+)
+if not defined COMPILER_DIR (
+    for /d %%d in ("%PARENT_DIR%\swoole_compile*") do (
+        set "COMPILER_DIR=%%d"
+    )
+)
+
+if not defined COMPILER_DIR (
+    echo [错误] 未找到 swoole_compile* 目录
+    echo   已搜索: %FRAMEWORK_ROOT%\
+    echo   已搜索: %PARENT_DIR%\
+    echo   请确保 swoole_compiler 文件夹在框架根目录或其父目录下
+    goto :error
+)
+
+:: 编译器路径 (从通配符匹配的目录获取)
+set "PHP_CLI=%COMPILER_DIR%\php.exe"
+set "SWOOLE_COMPILER=%COMPILER_DIR%\swoole_compiler.exe"
+set "DLL_PHP=%COMPILER_DIR%\php8ts.dll"
+set "DLL_PHPX=%COMPILER_DIR%\phpx.dll"
 
 :: vcvarsall — 系统路径，如需修改请改此处
 set "VCVARSALL=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
-
-:: 框架相对路径 (从 REPO_ROOT 到 FRAMEWORK_ROOT)
-call set "FRAMEWORK_REL=%%FRAMEWORK_ROOT:%REPO_ROOT%\=%%"
 
 :: --------------------------------------------------------------------------
 :: 入口
@@ -53,7 +70,8 @@ chcp 65001 >nul 2>&1
 echo.
 echo ========================================
 echo   SFC Framework - App Builder
-echo   框架: %FRAMEWORK_REL%
+echo   框架: %FRAMEWORK_ROOT%
+echo   编译器: %COMPILER_DIR%
 echo ========================================
 echo.
 
@@ -62,11 +80,7 @@ if not exist "%FRAMEWORK_ROOT%\" (
     echo [错误] 框架根目录不存在
     goto :error
 )
-if not exist "%REPO_ROOT%\" (
-    echo [错误] 仓库根目录不存在: %REPO_ROOT%
-    echo   框架预期位于: ^<repo^>\examples\^<框架名^>\
-    goto :error
-)
+
 if not exist "%PHP_CLI%" (
     echo [错误] PHP CLI 不存在: %PHP_CLI%
     goto :error
@@ -259,8 +273,8 @@ echo.
 echo ========================================
 echo   Step 2: AOT 编译 ^(PHP -^> exe^)
 echo ========================================
-echo   Config: %FRAMEWORK_REL%\apps\%APP_NAME%\project.yml
-echo   Output: %REPO_ROOT%\%OUTPUT_EXE%
+echo   Config: apps\%APP_NAME%\project.yml
+echo   Output: %FRAMEWORK_ROOT%\%OUTPUT_EXE%
 echo.
 
 :: 再次确认 cl.exe
@@ -271,9 +285,9 @@ if !errorlevel! neq 0 (
     goto :choose
 )
 
-:: AOT 必须从 REPO_ROOT 运行
-cd /d "%REPO_ROOT%"
-"%SWOOLE_COMPILER%" "%FRAMEWORK_REL%\apps\%APP_NAME%\project.yml" -f
+:: AOT 从框架根运行 (sources 路径相对于 project.yml 所在目录, 输出 exe 到当前目录)
+cd /d "%FRAMEWORK_ROOT%"
+"%SWOOLE_COMPILER%" "apps\%APP_NAME%\project.yml" -f
 set "AOT_EXIT=!errorlevel!"
 if !AOT_EXIT! neq 0 (
     echo.
@@ -293,8 +307,8 @@ if !AOT_EXIT! neq 0 (
 )
 
 :: 验证输出 exe
-if not exist "%REPO_ROOT%\%OUTPUT_EXE%" (
-    echo [错误] AOT 返回成功但未生成 exe: %REPO_ROOT%\%OUTPUT_EXE%
+if not exist "%FRAMEWORK_ROOT%\%OUTPUT_EXE%" (
+    echo [错误] AOT 返回成功但未生成 exe: %FRAMEWORK_ROOT%\%OUTPUT_EXE%
     echo   请检查 project.yml 的 name 字段: 当前为 "%EXE_NAME%"
     goto :choose
 )
@@ -314,7 +328,7 @@ set "DIST_DIR=%APP_DIR%\bin"
 if not exist "%DIST_DIR%\" mkdir "%DIST_DIR%" 2>nul
 
 echo   Copying %OUTPUT_EXE% ...
-copy /y "%REPO_ROOT%\%OUTPUT_EXE%" "%DIST_DIR%\" >nul
+copy /y "%FRAMEWORK_ROOT%\%OUTPUT_EXE%" "%DIST_DIR%\" >nul
 if !errorlevel! neq 0 (
     echo [错误] 复制 %OUTPUT_EXE% 失败
     goto :choose

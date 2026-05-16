@@ -538,6 +538,7 @@ class TemplateParser
 
         $node = new ComponentRefNode($tagName, $compFile, $attrs, $slotChildren, $selfClosing, $tok->line);
         $node->vIf = $vIf;
+        $node->isOverlay = isset($attrs['overlay']);
         return $node;
     }
 
@@ -571,6 +572,7 @@ class TemplateParser
                     'w'     => $child->w,
                     'h'     => $child->h,
                     'color' => $style['bg'] ?? 0,
+                    'layer' => $child->layer,
                 ];
                 // v4 M2.5: v-if condition
                 if ($child->vIf !== '') {
@@ -589,6 +591,7 @@ class TemplateParser
                     'fontSize' => $style['fontSize'] ?? 16,
                     'color'    => $style['fg'] ?? 0xFFFFFF,
                     'bold'     => $style['bold'] ?? 0,
+                    'layer'    => $child->layer,
                 ];
                 if ($child->hasContainer) {
                     $el['containerW'] = $child->containerW;
@@ -631,6 +634,7 @@ class TemplateParser
                         'border'  => $border,
                         'handler' => $btn->handler,
                         'arg'     => $btn->arg,
+                        'layer'   => $child->layer,
                     ];
                     // v4 M2.5: v-if condition on button (or propagated from grid)
                     if ($btn->vIf !== '') {

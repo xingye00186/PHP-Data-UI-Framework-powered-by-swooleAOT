@@ -146,12 +146,14 @@ test('Parser: parses full App.vue template correctly', function () {
     $numPad = $app->children[3];
     assert($numPad instanceof ComponentRefNode, "4th child should be ComponentRefNode (num-pad)");
     assert($numPad->tagName === 'num-pad', "Component tag should be num-pad");
-    assert($numPad->vIf === '!showDialog', "num-pad should have v-if='!showDialog', got '{$numPad->vIf}'");
+    assert($numPad->vIf === '', "num-pad should have no v-if (overlay layer handles visibility), got '{$numPad->vIf}'");
     
-    // Check about-dialog is a ComponentRefNode  
+    // Check about-dialog is a ComponentRefNode with overlay
     $about = $app->children[5];
     assert($about instanceof ComponentRefNode, "6th child should be ComponentRefNode (about-dialog)");
     assert($about->tagName === 'about-dialog', "Component tag should be about-dialog");
+    assert($about->isOverlay === true, "about-dialog should have overlay attribute");
+    assert($about->vIf === 'showDialog', "about-dialog should have v-if='showDialog'");
 });
 
 test('Parser: line numbers are tracked', function () {

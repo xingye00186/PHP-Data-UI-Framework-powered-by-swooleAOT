@@ -14,6 +14,9 @@ abstract class TemplateNode
     /** v4 M2.5: v-if condition (empty string = no condition) */
     public string $vIf = '';
 
+    /** v5 M3: overlay layer number (0 = base layer) */
+    public int $layer = 0;
+
     public function __construct(int $line = 0)
     {
         $this->line = $line;
@@ -182,6 +185,9 @@ class ComponentRefNode extends TemplateNode
 
     /** Whether the tag was self-closing (<comp />) */
     public bool $selfClosing;
+
+    /** v5 M3: whether this component is an overlay (auto-assigned to higher layer) */
+    public bool $isOverlay = false;
 
     public function __construct(
         string $tagName,

@@ -10,15 +10,15 @@
     <text x="10" y="10" v-model="expression" v-if="expression" class="expr-text" align="left" />
 
     <!-- 数字键盘（子组件 NumPad） — 弹窗显示时隐藏 -->
-    <num-pad x="0" y="80" v-if="!showDialog" />
+    <num-pad x="0" y="80" />
 
     <!-- About 按钮（? 切换弹窗）—— 弹窗显示时隐藏 -->
-    <grid x="290" y="38" cols="1" rows="1" cell-w="30" cell-h="28" margin="0" v-if="!showDialog">
+    <grid x="290" y="38" cols="1" rows="1" cell-w="30" cell-h="28" margin="0">
       <btn row="0" col="0" label="?" class="btn-func" @click="toggleAboutDialog" />
     </grid>
 
     <!-- 关于弹窗（子组件 AboutDialog） -->
-    <about-dialog x="0" y="0" />
+    <about-dialog x="0" y="0" overlay v-if="showDialog" />
   </app>
 </template>
 

@@ -97,16 +97,35 @@ class Application
         echo "App closed\n";
     }
 
-    /** 处理鼠标点击: 基于 LAYOUT 按钮坐标命中测试 */
+    /** 处理鼠标点击: 分层命中测试 (v5 M3) */
     private function handleClick(int $x, int $y): void
     {
         $buttons = getLayout()['buttons'];
 
+        // Phase 1: 确定最高活跃层
+        $maxLayer = 0;
         foreach ($buttons as $btn) {
-            if ($x >= $btn['x'] && $x < $btn['x'] + $btn['w'] &&
-                $y >= $btn['y'] && $y < $btn['y'] + $btn['h']) {
-                $this->dispatchClick($btn);
-                return;
+            if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) continue;
+            $layer = $btn['layer'] ?? 0;
+            if ($layer > $maxLayer) $maxLayer = $layer;
+        }
+
+        // Phase 2: 从最高层向下逆序命中测试
+        for ($l = $maxLayer; $l >= 0; $l--) {
+            for ($i = count($buttons) - 1; $i >= 0; $i--) {
+                $btn = $buttons[$i];
+                $btnLayer = $btn['layer'] ?? 0;
+                if ($btnLayer !== $l) continue;
+                // 低层有条件的非 chrome 按钮被屏蔽
+                if ($btnLayer < $maxLayer && isset($btn['condition'])) continue;
+                // condition 不满足则跳过
+                if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) continue;
+
+                if ($x >= $btn['x'] && $x < $btn['x'] + $btn['w'] &&
+                    $y >= $btn['y'] && $y < $btn['y'] + $btn['h']) {
+                    $this->dispatchClick($btn);
+                    return;
+                }
             }
         }
     }

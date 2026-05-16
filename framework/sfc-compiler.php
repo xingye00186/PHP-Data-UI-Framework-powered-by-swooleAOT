@@ -94,6 +94,7 @@ function resolveComponentRefs(AppNode $app, array &$classStyles, int $depth = 0)
 {
     $warnings = [];
     $resolvedChildren = [];
+    $nextOverlayLayer = 1;  // v5 M3: overlay layer counter
 
     foreach ($app->children as $child) {
         if ($child instanceof ComponentRefNode) {
@@ -158,7 +159,15 @@ function resolveComponentRefs(AppNode $app, array &$classStyles, int $depth = 0)
                 if ($child->vIf !== '' && $childNode->vIf === '') {
                     $childNode->vIf = $child->vIf;
                 }
+                // v5 M3: 分配 overlay layer
+                if ($child->isOverlay) {
+                    $childNode->layer = $nextOverlayLayer;
+                }
                 $resolvedChildren[] = $childNode;
+            }
+            // v5 M3: overlay component's children all processed, increment layer counter
+            if ($child->isOverlay) {
+                $nextOverlayLayer++;
             }
         } else {
             $resolvedChildren[] = $child;

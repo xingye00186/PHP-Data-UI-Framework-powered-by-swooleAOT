@@ -1,8 +1,8 @@
 # VueCalc Calculator Application Configuration (v5 M2)
 # 
 # 此文件支持独立 AOT 编译:
-#   cd <REPO_ROOT>
-#   swoole_compiler.exe examples/vue-calc/apps/calculator/project.yml -f
+#   cd <框架根>
+#   <swoole_compile*>/swoole_compiler.exe apps/calculator/project.yml -f
 #
 # sources 路径相对于本文件所在目录 (apps/calculator/)
 name: calculator

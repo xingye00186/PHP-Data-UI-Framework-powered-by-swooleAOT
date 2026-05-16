@@ -71,7 +71,7 @@ class BaseRenderer
     }
 
     /**
-     * 数据驱动渲染: 遍历 LAYOUT 数据，从组件 state 读取数据驱动 C++ 绘制
+     * 数据驱动渲染: 两阶段分层渲染 (v5 M3)
      */
     public function render(): void
     {
@@ -80,37 +80,54 @@ class BaseRenderer
         $elements = $layout['elements'];
         $buttons  = $layout['buttons'];
 
-        // 渲染元素 (rect 背景 + text 文本)
+        // ====== Phase 1: 确定最高活跃层 ======
+        $maxLayer = 0;
         foreach ($elements as $el) {
-            // v-if condition check
-            if (isset($el['condition']) && !$this->component->evalCondition($el['condition'])) {
-                continue;
-            }
-            $type = $el['type'];
-            if ($type === 'rect') {
-                vue_fill_rect($hdc, $el['x'], $el['y'], $el['w'], $el['h'], $el['color']);
-            } elseif ($type === 'text') {
-                $this->renderTextElement($hdc, $el);
+            if (isset($el['condition']) && !$this->component->evalCondition($el['condition'])) continue;
+            $layer = $el['layer'] ?? 0;
+            if ($layer > $maxLayer) $maxLayer = $layer;
+        }
+        foreach ($buttons as $btn) {
+            if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) continue;
+            $layer = $btn['layer'] ?? 0;
+            if ($layer > $maxLayer) $maxLayer = $layer;
+        }
+
+        // ====== Phase 2: 分层渲染 ======
+        // 元素: 所有层正常渲染 (低层被高层视觉覆盖)
+        for ($l = 0; $l <= $maxLayer; $l++) {
+            foreach ($elements as $el) {
+                if (($el['layer'] ?? 0) !== $l) continue;
+                if (isset($el['condition']) && !$this->component->evalCondition($el['condition'])) continue;
+                $type = $el['type'];
+                if ($type === 'rect') {
+                    vue_fill_rect($hdc, $el['x'], $el['y'], $el['w'], $el['h'], $el['color']);
+                } elseif ($type === 'text') {
+                    $this->renderTextElement($hdc, $el);
+                }
             }
         }
 
-        // 渲染按钮 (背景 + 边框 + 居中文字)
-        foreach ($buttons as $btn) {
-            // v-if condition check
-            if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) {
-                continue;
+        // 按钮: layer < maxLayer 且有 condition 的跳过 (被高层屏蔽); 无 condition 的 chrome 按钮仍渲染
+        for ($l = 0; $l <= $maxLayer; $l++) {
+            foreach ($buttons as $btn) {
+                $btnLayer = $btn['layer'] ?? 0;
+                if ($btnLayer !== $l) continue;
+                // 低层有条件的按钮被高层屏蔽 (非 chrome)
+                if ($btnLayer < $maxLayer && isset($btn['condition'])) continue;
+                // condition 不满足则跳过
+                if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) continue;
+                // 按钮背景和边框
+                vue_draw_button($hdc, $btn['x'], $btn['y'], $btn['w'], $btn['h'], $btn['bg'], $btn['border']);
+                // 按钮文字居中
+                $label = $btn['label'];
+                $labelLen = strlen($label);
+                $labelFontSize = 22;
+                $labelCharW = (int)($labelFontSize * 0.6);
+                $labelX = $btn['x'] + (int)(($btn['w'] - $labelLen * $labelCharW) / 2);
+                $labelY = $btn['y'] + (int)(($btn['h'] - $labelFontSize) / 2);
+                vue_draw_text($hdc, $labelX, $labelY, $label, $labelFontSize, $btn['fg'], 1);
             }
-            // 按钮背景和边框
-            vue_draw_button($hdc, $btn['x'], $btn['y'], $btn['w'], $btn['h'], $btn['bg'], $btn['border']);
-
-            // 按钮文字居中
-            $label = $btn['label'];
-            $labelLen = strlen($label);
-            $labelFontSize = 22;
-            $labelCharW = (int)($labelFontSize * 0.6);
-            $labelX = $btn['x'] + (int)(($btn['w'] - $labelLen * $labelCharW) / 2);
-            $labelY = $btn['y'] + (int)(($btn['h'] - $labelFontSize) / 2);
-            vue_draw_text($hdc, $labelX, $labelY, $label, $labelFontSize, $btn['fg'], 1);
         }
 
         vue_end_paint($this->hWnd, $hdc);
