@@ -6,3 +6,4 @@ vendor/
 *.exe
 *.dll
 swoole_compiler*
+nul
