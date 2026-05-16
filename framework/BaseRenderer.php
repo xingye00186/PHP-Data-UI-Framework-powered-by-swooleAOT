@@ -67,6 +67,18 @@ class BaseRenderer
             }
         }
 
+        // 居中对齐：根据容器宽度计算 x 坐标
+        if ($align === 'center' && isset($el['containerW'])) {
+            $containerW = $el['containerW'];
+            $containerX = $el['containerX'] ?? 0;
+            $charWidth  = (int)($fontSize * 0.6);
+            $textWidth  = $textLen * $charWidth;
+            $x = $containerX + (int)(($containerW - $textWidth) / 2);
+            if ($x < $containerX) {
+                $x = $containerX;
+            }
+        }
+
         vue_draw_text($hdc, $x, $y, $text, $fontSize, $color, $bold);
     }
 

@@ -19,8 +19,8 @@
     <text x="164" y="215" :bind="dialogVersion" class="dialog-version" align="center" container-w="280" container-x="24" v-if="showDialog" />
 
     <!-- 关闭按钮 -->
-    <grid x="134" y="275" cols="1" rows="1" cell-w="60" cell-h="28" margin="0" v-if="showDialog">
-      <btn row="0" col="0" label="Close" class="btn-func" @click="toggleAboutDialog" />
+    <grid x="114" y="265" cols="1" rows="1" cell-w="100" cell-h="34" margin="0" v-if="showDialog">
+      <btn row="0" col="0" label="Close" class="btn-op" @click="toggleAboutDialog" />
     </grid>
   </app>
 </template>
