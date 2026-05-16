@@ -13,22 +13,24 @@
 双击框架根目录的 **`main_build.bat`**，自动扫描 `apps/` 下的应用，列出后选择构建。编译完成后回到选择菜单，可继续构建其他应用，输入 `q` 退出。
 
 ```
-<父目录>/                              ← swoole_compiler 与框架的同级目录
-├── swoole_compiler_vNNNN_windows_x86_64/  ← 编译器 (通配符自动发现, 版本名会变)
+<框架目录>/                              ← 框架根 (可整体迁移)
+├── main_build.bat              ← [编排器] 扫描 apps/, 选择构建目标应用
+├── swoole_compiler/            ← 编译器 (通配符 swoole_compile* 自动发现)
 │   ├── php.exe
 │   ├── swoole_compiler.exe
 │   ├── php8ts.dll
-│   └── phpx.dll
-└── <框架目录>/                          ← 框架根 (可整体迁移)
-    ├── main_build.bat              ← [编排器] 扫描 apps/, 选择构建目标应用
-    ├── framework/
-    ├── apps/
-    │   └── calculator/
-    │       └── bin/           ← [构建产物] 可分发包
-    └── ...
+│   ├── phpx.dll
+│   └── SDK/lib/php8embed.lib   ← AOT 链接所需 (自动复制到编译器根)
+├── framework/
+├── apps/
+│   └── calculator/
+│       └── bin/           ← [构建产物] 可分发包
+└── ...
 ```
 
-`main_build.bat` 使用 `swoole_compile*` 通配符在父目录中自动查找编译器文件夹，无需硬编码版本号。编译器版本更新后只需将新文件夹放到同一父目录下即可。
+`main_build.bat` 使用 `swoole_compile*` 通配符，优先在框架根目录内查找编译器文件夹，其次在父目录查找。无需硬编码版本号，编译器版本更新后只需替换文件夹即可。
+
+> **php8embed.lib**：AOT 编译需要此文件。脚本会自动从 `SDK/lib/`、`lib/` 等路径查找并复制到编译器根目录。
 
 ### 方式 2：直接构建
 
@@ -80,7 +82,7 @@ cp "$COMPILER_DIR/phpx.dll" apps/calculator/bin/
 ## 构建管道
 
 ```
-Calculator.vue ──→ [SFC 编译器] ──→ gen/*.gen.php ──→ [AOT 编译器] ──→ calculator.exe ──→ [打包] ──→ apps/calculator/bin/
+App.vue ──→ [SFC 编译器] ──→ gen/*.gen.php ──→ [AOT 编译器] ──→ calculator.exe ──→ [打包] ──→ apps/calculator/bin/
  (apps/calculator/)    (含嵌套组件解析)    (apps/calculator/gen/) (PHP→C++→MSVC→exe)              (exe + DLL)
                       ↳ 读取 project.yml
                          组件注册表 (v5 M2)
@@ -90,11 +92,11 @@ Calculator.vue ──→ [SFC 编译器] ──→ gen/*.gen.php ──→ [AOT 
 
 | 项目 | 说明 |
 |------|------|
-| 命令 | `php framework/sfc-compiler.php apps/calculator/Calculator.vue` |
+| 命令 | `php framework/sfc-compiler.php apps/calculator/App.vue` |
 | PHP | 使用 `swoole_compile*` 目录下的 `php.exe`（通配符自动发现） |
-| 输入 | `apps/calculator/Calculator.vue`（template + script + style 三块）+ 嵌套组件 |
+| 输入 | `apps/calculator/App.vue`（template + script + style 三块）+ 嵌套组件 |
 | 组件注册 | SFC 编译器自动读取同目录 `apps/calculator/project.yml` 中的 `components` 映射 |
-| 输出 | `apps/calculator/gen/Calculator.gen.php`、`apps/calculator/gen/CalculatorLayout_gen.php` |
+| 输出 | `apps/calculator/gen/App.gen.php`、`apps/calculator/gen/AppLayout_gen.php` |
 | 特性 | 标准 PHP CLI 脚本，不经过 AOT；支持嵌套组件解析与布局内联 (v5 M2) |
 
 ### Step 2: AOT 编译器
@@ -182,6 +184,7 @@ MSVC 编译器环境未初始化。双击 build.bat 会自动调用 vcvarsall.ba
 | `Cannot redeclare class X` | 重复声明 | 删除 require 语句 |
 | `Undefined variable $xxx` | 未初始化变量 | 显式赋初始值 |
 | `error C3927` | 文件名含点号 | 改用下划线 |
+| `找不到 php8embed.lib` | SDK/lib/ 路径未被搜索 | 脚本已自动处理；或手动复制到编译器根目录 |
 
 ### Q: MSYS2 中运行 build.bat 没反应？
 
@@ -257,15 +260,15 @@ chcp 65001
     ├── apps/calculator/           ← 计算器应用层
     │   ├── main.php               ← [AOT 入口] 应用启动逻辑
     │   ├── Application.php        ← 窗口/事件循环控制器
-    │   ├── Calculator.vue         ← [源] SFC 单文件组件
+    │   ├── App.vue                ← [源] SFC 单文件组件 (主入口)
     │   ├── project.yml            ← 应用级配置 (组件注册表, v5 M2)
     │   ├── components/
     │   │   ├── DisplayPanel.vue   ← 可复用子组件 (v5 M2)
     │   │   ├── NumPad.vue         ← 可复用子组件 (v5 M2)
-    │   │   └── AboutDialog.vue    ← 可复用子组件 (v5 M2)
+    │   │   └── AboutDialog.vue    ← 弹窗子组件 (v5 M3: overlay 分层)
     │   ├── gen/                   ← [自动生成] SFC 编译器输出
-    │   │   ├── Calculator.gen.php
-    │   │   └── CalculatorLayout_gen.php
+    │   │   ├── App.gen.php
+    │   │   └── AppLayout_gen.php
     │   └── bin/                   ← [构建产物] 可分发包 (每个 app 独立)
     │       ├── calculator.exe     ← 计算器主程序 (~240KB)
     │       ├── php8ts.dll         ← PHP 8 运行时 (~11MB)
