@@ -286,6 +286,20 @@ if !errorlevel! neq 0 (
 )
 
 :: AOT 从框架根运行 (sources 路径相对于 project.yml 所在目录, 输出 exe 到当前目录)
+:: 确保 php8embed.lib 在编译器根目录 (swoole_compiler 仅搜索自身目录)
+if not exist "%COMPILER_DIR%\php8embed.lib" (
+    if exist "%COMPILER_DIR%\lib\lib\php8embed.lib" (
+        copy /Y "%COMPILER_DIR%\lib\lib\php8embed.lib" "%COMPILER_DIR%\" >nul
+        echo   [Info] 已复制 php8embed.lib 到编译器目录
+    ) else if exist "%COMPILER_DIR%\lib\php8embed.lib" (
+        copy /Y "%COMPILER_DIR%\lib\php8embed.lib" "%COMPILER_DIR%\" >nul
+        echo   [Info] 已复制 php8embed.lib 到编译器目录
+    ) else (
+        echo [错误] 找不到 php8embed.lib
+        echo   请将 php8embed.lib 放置在: %COMPILER_DIR%\
+        goto :choose
+    )
+)
 cd /d "%FRAMEWORK_ROOT%"
 "%SWOOLE_COMPILER%" "apps\%APP_NAME%\project.yml" -f
 set "AOT_EXIT=!errorlevel!"
