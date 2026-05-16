@@ -5,3 +5,4 @@ vendor/
 *.obj
 *.exe
 *.dll
+swoole_compiler*
