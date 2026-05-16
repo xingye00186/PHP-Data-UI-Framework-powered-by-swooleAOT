@@ -15,6 +15,13 @@
 - [App.vue](file://apps/calculator/App.vue)
 </cite>
 
+## 更新摘要
+**变更内容**
+- 更新了分层渲染机制的描述，反映从两个独立循环到单一循环的修复
+- 新增了z-order渲染顺序的详细说明
+- 更新了渲染流程图以反映新的绘制顺序
+- 增强了视觉覆盖问题的解释和解决方案
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构概览](#项目结构概览)
@@ -31,6 +38,8 @@
 BaseRenderer基础渲染器是VueCalc v5项目中的核心渲染组件，采用数据驱动的方式实现高性能的桌面应用程序渲染。该渲染器基于SFC（Single File Component）编译器生成的布局数据，通过GDI图形接口进行绘制，实现了从模板到最终渲染的完整数据流。
 
 BaseRenderer的设计理念是"泛化数据驱动渲染"，它不绑定特定的组件类型，可以接受任意ReactiveComponent子类，支持框架的复用性和扩展性。该组件通过两阶段分层渲染机制，实现了复杂的UI层次管理和条件渲染功能。
+
+**更新** 本次更新重点关注z-order渲染修复，解决了BaseRenderer中两个独立分层循环导致的视觉覆盖问题，现在采用单一循环确保每层内元素和按钮的正确绘制顺序。
 
 ## 项目结构概览
 
@@ -70,12 +79,12 @@ CSS --> Layout
 ```
 
 **图表来源**
-- [BaseRenderer.php:1-136](file://framework/BaseRenderer.php#L1-L136)
+- [BaseRenderer.php:1-146](file://framework/BaseRenderer.php#L1-L146)
 - [sfc-compiler.php:1-485](file://framework/sfc-compiler.php#L1-L485)
 - [Application.php:1-139](file://apps/calculator/Application.php#L1-L139)
 
 **章节来源**
-- [BaseRenderer.php:1-136](file://framework/BaseRenderer.php#L1-L136)
+- [BaseRenderer.php:1-146](file://framework/BaseRenderer.php#L1-L146)
 - [sfc-compiler.php:1-485](file://framework/sfc-compiler.php#L1-L485)
 - [Application.php:1-139](file://apps/calculator/Application.php#L1-L139)
 
@@ -122,25 +131,49 @@ Application --> ReactiveComponent : "管理"
 ```
 
 **图表来源**
-- [BaseRenderer.php:9-136](file://framework/BaseRenderer.php#L9-L136)
+- [BaseRenderer.php:9-146](file://framework/BaseRenderer.php#L9-L146)
 - [ReactiveComponent.php:11-35](file://framework/ReactiveComponent.php#L11-L35)
 - [Application.php:10-139](file://apps/calculator/Application.php#L10-L139)
 
-### 渲染流程详解
+### z-order渲染修复详解
 
-BaseRenderer的渲染过程采用两阶段分层渲染策略：
+**更新** BaseRenderer经过重要改进，修复了视觉覆盖问题。之前的实现使用两个独立的分层循环，现在采用单一循环确保每层内元素和按钮的正确绘制顺序。
 
-1. **第一阶段：确定最高活跃层**
-   - 遍历所有元素和按钮，计算最大层级
-   - 用于确定渲染的优先级和遮挡关系
+#### 修复前的问题
 
-2. **第二阶段：分层渲染**
-   - 按层级从低到高依次渲染
-   - 元素层：矩形和文本元素
-   - 按钮层：按钮及其标签文本
+在修复之前，BaseRenderer使用两个独立的循环：
+1. 第一个循环渲染所有元素（矩形和文本）
+2. 第二个循环渲染所有按钮
+
+这种设计导致的问题：
+- 同一层内的按钮可能覆盖元素，而不是按照预期的z-order顺序
+- 条件按钮可能在某些情况下被错误地遮挡
+- 绘制顺序不一致，影响视觉效果
+
+#### 修复后的解决方案
+
+现在采用单一循环策略，确保每层内元素和按钮的正确绘制顺序：
+
+```mermaid
+flowchart TD
+Start[开始渲染] --> Phase1[阶段1: 确定最高活跃层]
+Phase1 --> Phase2[阶段2: 单一循环渲染]
+Phase2 --> LayerLoop[按层循环: l = 0 to maxActiveLayer]
+LayerLoop --> ElementRender[渲染本层元素]
+ElementRender --> ButtonRender[渲染本层按钮]
+ButtonRender --> ConditionCheck{检查条件遮挡}
+ConditionCheck --> |被遮挡| SkipButton[跳过渲染]
+ConditionCheck --> |可见| RenderButton[渲染按钮]
+SkipButton --> NextLayer[下一层]
+RenderButton --> NextLayer
+NextLayer --> End[渲染完成]
+```
+
+**图表来源**
+- [BaseRenderer.php:88-144](file://framework/BaseRenderer.php#L88-L144)
 
 **章节来源**
-- [BaseRenderer.php:76-134](file://framework/BaseRenderer.php#L76-L134)
+- [BaseRenderer.php:88-144](file://framework/BaseRenderer.php#L88-L144)
 
 ## 架构总览
 
@@ -172,7 +205,7 @@ end
 
 **图表来源**
 - [Application.php:43-98](file://apps/calculator/Application.php#L43-L98)
-- [BaseRenderer.php:76-134](file://framework/BaseRenderer.php#L76-L134)
+- [BaseRenderer.php:88-144](file://framework/BaseRenderer.php#L88-L144)
 
 ### 数据流架构
 
@@ -235,18 +268,19 @@ Skip --> End
 ```
 
 **图表来源**
-- [BaseRenderer.php:27-71](file://framework/BaseRenderer.php#L27-L71)
+- [BaseRenderer.php:27-83](file://framework/BaseRenderer.php#L27-L83)
 
 #### 分层渲染机制
 
-BaseRenderer实现了复杂的分层渲染系统，支持多层UI元素的正确显示顺序：
+**更新** BaseRenderer实现了复杂的分层渲染系统，支持多层UI元素的正确显示顺序。经过z-order修复后，现在采用单一循环确保正确的绘制顺序：
 
 - **层级计算**：确定最高活跃层级
 - **条件遮挡**：低层条件按钮被高层遮挡
 - **Chrome按钮**：特殊按钮类型不受条件遮挡影响
+- **单一循环**：每层内先画元素再画按钮，确保高层完整覆盖低层
 
 **章节来源**
-- [BaseRenderer.php:76-134](file://framework/BaseRenderer.php#L76-L134)
+- [BaseRenderer.php:88-144](file://framework/BaseRenderer.php#L88-L144)
 
 ### 编译器集成
 
@@ -260,6 +294,7 @@ BaseRenderer与SFC编译器的深度集成体现在多个方面：
 - **绑定键**：动态数据绑定的标识符
 - **条件表达式**：v-if条件的结构化表示
 - **事件处理器**：按钮点击事件的映射
+- **层信息**：z-order渲染的层级标识
 
 #### 条件渲染系统
 
@@ -334,7 +369,7 @@ LayoutData --> BaseRenderer
 ```
 
 **图表来源**
-- [BaseRenderer.php:1-136](file://framework/BaseRenderer.php#L1-L136)
+- [BaseRenderer.php:1-146](file://framework/BaseRenderer.php#L1-L146)
 - [Application.php:1-139](file://apps/calculator/Application.php#L1-L139)
 - [template-parser.php:1-866](file://framework/compiler/template-parser.php#L1-L866)
 
@@ -368,9 +403,12 @@ BaseRenderer在设计时充分考虑了性能优化：
 
 #### 分层渲染优化
 
+**更新** 经过z-order修复后，分层渲染优化得到进一步增强：
+
 - **预计算层级**：在渲染前计算最高活跃层级，避免重复计算
-- **按层渲染**：减少不必要的绘制调用
+- **单一循环优化**：减少循环开销，提高渲染效率
 - **条件短路**：跳过不满足条件的元素渲染
+- **z-order优化**：确保正确的绘制顺序，避免额外的重绘
 
 #### 内存管理
 
@@ -399,15 +437,16 @@ LayerOpt[分层优化]
 TextOpt[文本优化]
 GC[垃圾回收]
 Cache[缓存策略]
+ZOrderOpt[z-order优化]
 end
 FPS --> LayerOpt
 RenderTime --> TextOpt
 Memory --> GC
 CPU --> Cache
-LayerOpt --> Optimize[性能提升]
-TextOpt --> Optimize
-GC --> Optimize
-Cache --> Optimize
+LayerOpt --> ZOrderOpt
+TextOpt --> ZOrderOpt
+ZOrderOpt --> Optimize[性能提升]
+Optimize --> Optimize
 ```
 
 **图表来源**
@@ -459,6 +498,22 @@ Cache --> Optimize
 2. 验证v-if条件设置
 3. 确认按钮坐标计算
 
+#### z-order渲染问题
+
+**更新** 新增z-order相关问题的诊断：
+
+**问题现象**：元素和按钮的显示顺序不正确
+
+**可能原因**：
+- 层级设置错误
+- 条件遮挡逻辑问题
+- 绘制顺序不正确
+
+**解决步骤**：
+1. 检查元素和按钮的layer属性
+2. 验证条件遮挡设置
+3. 确认单一循环渲染逻辑
+
 **章节来源**
 - [BaseRenderer.php:21-24](file://framework/BaseRenderer.php#L21-L24)
 - [Application.php:100-131](file://apps/calculator/Application.php#L100-L131)
@@ -485,12 +540,15 @@ Cache --> Optimize
 
 BaseRenderer基础渲染器作为VueCalc v5项目的核心组件，展现了现代前端工程在桌面应用领域的创新实践。通过数据驱动的渲染理念、编译时优化和运行时高效执行的结合，实现了高性能、可维护的桌面应用程序架构。
 
+**更新** 本次z-order渲染修复进一步增强了渲染器的稳定性和正确性。通过从两个独立分层循环改为单一循环，解决了视觉覆盖问题，确保了每层内元素和按钮的正确绘制顺序。
+
 该渲染器的主要优势包括：
 
 1. **高度可复用性**：不绑定特定组件类型，支持框架复用
 2. **强大的条件渲染**：支持复杂的v-if条件和多层遮挡
 3. **性能优化**：分层渲染和智能缓存策略
-4. **易于扩展**：清晰的接口设计和模块化架构
+4. **z-order保证**：修复后的单一循环确保正确的绘制顺序
+5. **易于扩展**：清晰的接口设计和模块化架构
 
 未来的发展方向可能包括：
 
