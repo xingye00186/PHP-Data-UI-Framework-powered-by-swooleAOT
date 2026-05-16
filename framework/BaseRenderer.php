@@ -94,8 +94,9 @@ class BaseRenderer
         }
 
         // ====== Phase 2: 分层渲染 ======
-        // 元素: 所有层正常渲染 (低层被高层视觉覆盖)
+        // 每层内先画元素再画按钮，确保高层完整覆盖低层
         for ($l = 0; $l <= $maxLayer; $l++) {
+            // 本层元素
             foreach ($elements as $el) {
                 if (($el['layer'] ?? 0) !== $l) continue;
                 if (isset($el['condition']) && !$this->component->evalCondition($el['condition'])) continue;
@@ -106,10 +107,7 @@ class BaseRenderer
                     $this->renderTextElement($hdc, $el);
                 }
             }
-        }
-
-        // 按钮: layer < maxLayer 且有 condition 的跳过 (被高层屏蔽); 无 condition 的 chrome 按钮仍渲染
-        for ($l = 0; $l <= $maxLayer; $l++) {
+            // 本层按钮: layer < maxLayer 且有 condition 的跳过 (被高层屏蔽)
             foreach ($buttons as $btn) {
                 $btnLayer = $btn['layer'] ?? 0;
                 if ($btnLayer !== $l) continue;
