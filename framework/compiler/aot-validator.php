@@ -12,6 +12,7 @@
  *   4. No variable method calls ($obj->$method())
  *   5. No PHP8-only functions (str_contains → use strpos)
  *   6. All code must be inside a class or function (no top-level executable statements in gen files)
+ *   7. No variable function calls ($fn() — AOT type inference fails)
  */
 
 class AotValidator
@@ -95,6 +96,20 @@ class AotValidator
             if (preg_match('/\b' . preg_quote($func, '/') . '\s*\(/', $code)) {
                 $this->warnings[] = "AOT: PHP8 function '$func()' detected. " .
                     "May not be available in all PHP versions. Consider using: $replacement";
+            }
+        }
+
+        // ============================================================
+        // Rule 7: No variable function calls $fn()
+        // ============================================================
+        // AOT 编译器对变量函数调用 ($fn = 'funcName'; $fn()) 的返回值类型推导不正确，
+        // 导致运行时崩溃。使用 if/else 或 match 显式调用具名函数。
+        if (preg_match('/\$\w+\s*\(/', $code, $matches)) {
+            // 排除常见误报: $this->method(), $obj->method(), new $class()
+            // 只匹配独立的 $var(...) 形式
+            if (preg_match('/(?<![>:\w])\$\w+\s*\(/', $code, $matches)) {
+                $this->errors[] = "AOT: Variable function call detected ('{$matches[0]}'). " .
+                    "AOT does not support \$fn(). Use explicit if/else or match dispatch instead.";
             }
         }
 

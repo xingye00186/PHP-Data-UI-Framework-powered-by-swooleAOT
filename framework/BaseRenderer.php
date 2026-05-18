@@ -1,23 +1,57 @@
 <?php
 
 /**
- * BaseRenderer - 泛化数据驱动渲染器 (v5 M1: 从 main.php CalcRenderer 提取并泛化)
+ * BaseRenderer - 泛化数据驱动渲染器 (v6 M1)
  * 
- * 接受任意 ReactiveComponent 子类，遍历 LAYOUT 数据，从组件 state 读取数据驱动 C++ GDI 绘制。
- * 不绑定特定组件类型，支持框架复用。
+ * 支持分段布局: 通过 attachLayout/detachLayout 管理活跃布局列表。
+ * 支持渲染抽象: 通过 RenderContext 进行后端无关绘制。
+ * 保持两阶段分层渲染逻辑 (v5 M3 layer 机制)。
+ *
+ * AOT 限制:
+ *   - 不支持 $fn() 变量函数调用 → 使用 callLayoutSegment() 显式分发
+ *   - 函数返回嵌套数组后子数组类型丢失 → 使用 (array) 类型转换修复
  */
 class BaseRenderer
 {
     private int $hWnd;
     private ReactiveComponent $component;
+    private RenderContext $ctx;
+    private array $activeLayouts = [];
 
-    public function __construct(int $hWnd, ReactiveComponent $component)
+    public function __construct(int $hWnd, ReactiveComponent $component, RenderContext $ctx)
     {
         $this->hWnd = $hWnd;
         $this->component = $component;
+        $this->ctx = $ctx;
     }
 
-    /** 从组件属性获取绑定值 (委托给生成的 getBindValue 方法) */
+    /** v6 M1: 挂载组件布局到渲染列表 */
+    public function attachLayout(string $name, int $layoutIdx): void
+    {
+        $this->activeLayouts[$name] = $layoutIdx;
+        $this->component->onAttach($name);
+    }
+
+    /** v6 M1: 从渲染列表卸载组件布局 */
+    public function detachLayout(string $name): void
+    {
+        unset($this->activeLayouts[$name]);
+        $this->component->onDetach($name);
+    }
+
+    /** v6 M1: 获取所有活跃布局合并后的数据 */
+    public function getActiveLayout(): array
+    {
+        $allElements = []; $allButtons = [];
+        foreach ($this->activeLayouts as $name => $idx) {
+            $seg = callLayoutSegment($name);
+            foreach ((array) $seg['elements'] as $el) $allElements[] = $el;
+            foreach ((array) $seg['buttons'] as $btn) $allButtons[] = $btn;
+        }
+        return ['elements' => $allElements, 'buttons' => $allButtons];
+    }
+
+    /** 从组件属性获取绑定值 */
     protected function getBindValue(string $bindKey): string
     {
         return $this->component->getBindValue($bindKey);
@@ -28,7 +62,6 @@ class BaseRenderer
     {
         $bindKey = $el['bind'] ?? '';
 
-        // 仅在绑定了属性且有内容时渲染
         if ($bindKey !== '') {
             $text = $this->getBindValue($bindKey);
             if ($text === '') {
@@ -54,7 +87,7 @@ class BaseRenderer
             $fontSize = 18;
         }
 
-        // 右对齐：根据容器宽度计算 x 坐标
+        // 右对齐
         if ($align === 'right' && isset($el['containerW'])) {
             $containerW = $el['containerW'];
             $containerX = $el['containerX'] ?? 0;
@@ -67,7 +100,7 @@ class BaseRenderer
             }
         }
 
-        // 居中对齐：根据容器宽度计算 x 坐标
+        // 居中对齐
         if ($align === 'center' && isset($el['containerW'])) {
             $containerW = $el['containerW'];
             $containerX = $el['containerX'] ?? 0;
@@ -79,23 +112,29 @@ class BaseRenderer
             }
         }
 
-        vue_draw_text($hdc, $x, $y, $text, $fontSize, $color, $bold);
+        $this->ctx->drawText($hdc, $x, $y, $text, $fontSize, $color, $bold);
     }
 
     /**
-     * 数据驱动渲染: 两阶段分层渲染 (v5 M3)
+     * 数据驱动渲染: 两阶段分层渲染 (v5 M3 + v6 M1 activeLayouts)
+     *
+     * AOT: 布局数据收集直接内联, 不经过函数返回值提取,
+     * 避免 AOT 嵌套数组类型损坏 (子数组变 int)
      */
     public function render(): void
     {
-        // v5 M4: 消费 dirty 状态 (当前仍全量重绘，为 v6 增量渲染做准备)
+        // v5 M4: 消费 dirty 状态
         $dirtyInfo = $this->component->consumeDirty();
-        // $dirtyInfo['full'] = true 时全量重绘; 否则 $dirtyInfo['groups'] 记录脏 group
-        // 当前阶段: GDI 双缓冲要求全量绘制，group 信息仅作为元数据预留
 
-        $hdc = vue_begin_paint($this->hWnd);
-        $layout   = getLayout();
-        $elements = $layout['elements'];
-        $buttons  = $layout['buttons'];
+        $hdc = $this->ctx->beginFrame($this->hWnd);
+
+        // v6 M1: 从 activeLayouts 动态收集布局数据
+        $elements = []; $buttons = [];
+        foreach ($this->activeLayouts as $name => $idx) {
+            $seg = callLayoutSegment($name);
+            foreach ((array) $seg['elements'] as $el) $elements[] = $el;
+            foreach ((array) $seg['buttons'] as $btn) $buttons[] = $btn;
+        }
 
         // ====== Phase 1: 确定最高活跃层 ======
         $maxLayer = 0;
@@ -111,7 +150,6 @@ class BaseRenderer
         }
 
         // ====== Phase 2: 分层渲染 ======
-        // 每层内先画元素再画按钮，确保高层完整覆盖低层
         for ($l = 0; $l <= $maxLayer; $l++) {
             // 本层元素
             foreach ($elements as $el) {
@@ -119,21 +157,18 @@ class BaseRenderer
                 if (isset($el['condition']) && !$this->component->evalCondition($el['condition'])) continue;
                 $type = $el['type'];
                 if ($type === 'rect') {
-                    vue_fill_rect($hdc, $el['x'], $el['y'], $el['w'], $el['h'], $el['color']);
+                    $this->ctx->fillRect($hdc, $el['x'], $el['y'], $el['w'], $el['h'], $el['color']);
                 } elseif ($type === 'text') {
                     $this->renderTextElement($hdc, $el);
                 }
             }
-            // 本层按钮: layer < maxLayer 且有 condition 的跳过 (被高层屏蔽)
+            // 本层按钮
             foreach ($buttons as $btn) {
                 $btnLayer = $btn['layer'] ?? 0;
                 if ($btnLayer !== $l) continue;
-                // 低层有条件的按钮被高层屏蔽 (非 chrome)
                 if ($btnLayer < $maxLayer && isset($btn['condition'])) continue;
-                // condition 不满足则跳过
                 if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) continue;
-                // 按钮背景和边框
-                vue_draw_button($hdc, $btn['x'], $btn['y'], $btn['w'], $btn['h'], $btn['bg'], $btn['border']);
+                $this->ctx->drawButton($hdc, $btn['x'], $btn['y'], $btn['w'], $btn['h'], $btn['bg'], $btn['border']);
                 // 按钮文字居中
                 $label = $btn['label'];
                 $labelLen = strlen($label);
@@ -141,10 +176,10 @@ class BaseRenderer
                 $labelCharW = (int)($labelFontSize * 0.6);
                 $labelX = $btn['x'] + (int)(($btn['w'] - $labelLen * $labelCharW) / 2);
                 $labelY = $btn['y'] + (int)(($btn['h'] - $labelFontSize) / 2);
-                vue_draw_text($hdc, $labelX, $labelY, $label, $labelFontSize, $btn['fg'], 1);
+                $this->ctx->drawText($hdc, $labelX, $labelY, $label, $labelFontSize, $btn['fg'], 1);
             }
         }
 
-        vue_end_paint($this->hWnd, $hdc);
+        $this->ctx->endFrame($this->hWnd, $hdc);
     }
 }

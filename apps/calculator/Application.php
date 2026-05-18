@@ -1,25 +1,27 @@
 <?php
 
 /**
- * Application — 通用 SFC 应用控制器 (v5 M2)
+ * Application — 通用 SFC 应用控制器 (v6 M1)
  * 
  * 负责窗口初始化、事件循环、点击分发、脏标记驱动的渲染调度。
- * 接受任意 ReactiveComponent 子类，不绑定具体组件类型。
- * 框架可复用：任何 .vue 编译产物均可作为组件传入。
+ * 支持分段布局: 初始化时 attach 所有组件布局。
+ * 支持渲染抽象: 通过 RenderContext 参数化渲染后端。
  */
 class Application
 {
     private ReactiveComponent $component;
     private int $hWnd;
     private BaseRenderer $renderer;
+    private RenderContext $ctx;
 
-    public function __construct(ReactiveComponent $component)
+    public function __construct(ReactiveComponent $component, RenderContext $ctx)
     {
         $this->component = $component;
+        $this->ctx = $ctx;
         $this->hWnd = 0;
     }
 
-    /** 初始化窗口 (使用 SFC 生成 WINDOW_WIDTH/WINDOW_HEIGHT 常量) */
+    /** 初始化窗口 */
     public function initWindow(): bool
     {
         $this->hWnd = vue_window_create(
@@ -34,7 +36,15 @@ class Application
         }
 
         vue_window_show($this->hWnd, SW_SHOW);
-        $this->renderer = new BaseRenderer($this->hWnd, $this->component);
+
+        // v6 M1: 创建渲染器并 attach 所有分段布局
+        $this->renderer = new BaseRenderer($this->hWnd, $this->component, $this->ctx);
+        // v6 M1: 动态注册所有编译器生成的布局段
+        $segNames = getLayoutSegmentNames();
+        for ($i = 0; $i < count($segNames); $i++) {
+            $this->renderer->attachLayout($segNames[$i], $i + 1);
+        }
+
         echo "Window created (SFC Data-Driven Mode)\n";
         return true;
     }
@@ -47,7 +57,6 @@ class Application
         echo "App started!\n";
 
         while ($running) {
-            // 处理所有待处理的 Windows 消息
             while (true) {
                 $msg = vue_peek_message();
                 if (count($msg) == 0) {
@@ -97,10 +106,11 @@ class Application
         echo "App closed\n";
     }
 
-    /** 处理鼠标点击: 分层命中测试 (v5 M3) */
+    /** 处理鼠标点击: 分层命中测试 (v6 M1: 使用 activeLayouts) */
     private function handleClick(int $x, int $y): void
     {
-        $buttons = getLayout()['buttons'];
+        $layout = $this->renderer->getActiveLayout();
+        $buttons = (array) $layout['buttons'];
 
         // Phase 1: 确定最高活跃层
         $maxLayer = 0;
@@ -116,9 +126,7 @@ class Application
                 $btn = $buttons[$i];
                 $btnLayer = $btn['layer'] ?? 0;
                 if ($btnLayer !== $l) continue;
-                // 低层有条件的非 chrome 按钮被屏蔽
                 if ($btnLayer < $maxLayer && isset($btn['condition'])) continue;
-                // condition 不满足则跳过
                 if (isset($btn['condition']) && !$this->component->evalCondition($btn['condition'])) continue;
 
                 if ($x >= $btn['x'] && $x < $btn['x'] + $btn['w'] &&
@@ -130,7 +138,7 @@ class Application
         }
     }
 
-    /** 分发按钮点击到组件方法 (委托给生成的 dispatchClick 方法) */
+    /** 分发按钮点击到组件方法 */
     private function dispatchClick(array $btn): void
     {
         $this->component->dispatchClick($btn);

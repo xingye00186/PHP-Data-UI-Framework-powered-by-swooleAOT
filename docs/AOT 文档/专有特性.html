@@ -1,0 +1,49 @@
+<article><h1 class="sc-jTQDnj PWYCG">专有特性</h1><section class="sc-beySbM lmGTpq"><p><code>AOT</code>编译器除了常规的<code>PHP</code>语法之外添加了一些专有的特性。非<code>AOT</code>编译器可以使用下列的<code>polyfills</code>垫片函数实现兼容。</p><h2><a tabindex="-1" id="use-native_types" class="sc-hLQRIN dbkbOC"></a>use native_types</h2><p>要求编译器将<code>int</code>、<code>float</code>、<code>bool</code>类型转为原生的类型，以提高运算性能。</p><pre><code class="container--d9e3fe6d">use native_types<span class="token punctuation">;</span>
+
+<span class="token keyword">function</span> <span class="token function">foo</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{</span>
+    $a <span class="token operator">=</span> <span class="token number">1000</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span>$a<span class="token operator">--</span><span class="token punctuation">)</span> <span class="token punctuation">{</span>
+
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre><p>使用<code>use native_types</code>后，局部变量赋值为整数时，会被声明为<code>php::Int</code>而不是<code>php::Var</code>，这在密集运算场景下会有巨大的性能提升。若不添加，则默认为<code>php::Var</code>，将使用<code>zval</code>结构体保存整数。</p><h3><a tabindex="-1" id="垫片函数" class="sc-hLQRIN dbkbOC"></a>垫片函数</h3><p>无。在 <code>ZendPHP</code> 下无效果。</p><h2><a tabindex="-1" id="objvarobj-class" class="sc-hLQRIN dbkbOC"></a>objvar($obj, $class)</h2><p>将一个变量声明为某个类的对象。此函数只是检查表达式是否为对象类型，并且是<code>class</code>的实例。<br>作用：从数组中读取元素，会发生类型丢失，使用此函数可以重建类型。</p><pre><code class="container--d9e3fe6d">$obj <span class="token operator">=</span> <span class="token function">objvar</span><span class="token punctuation">(</span>$array<span class="token punctuation">[</span><span class="token string">'object'</span><span class="token punctuation">]</span><span class="token punctuation">,</span> App\Hello\Test<span class="token punctuation">:</span><span class="token punctuation">:</span>class<span class="token punctuation">)</span><span class="token punctuation">;</span>
+$obj<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">foo</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre><p>编译器可以重新得到 <code>$obj</code> 对象的类型。这样就有助于编译器将对<code>$obj</code>的方法调用转为<code>Native Call</code>而不是<code>zend_call_function()</code>的动态调用，性能可以得到大幅提升。</p><h3><a tabindex="-1" id="垫片函数-1" class="sc-hLQRIN dbkbOC"></a>垫片函数</h3><pre><code class="container--d9e3fe6d"><span class="token keyword">function</span> <span class="token function">objval</span><span class="token punctuation">(</span>mixed $obj<span class="token punctuation">,</span> string $class<span class="token punctuation">)</span><span class="token punctuation">:</span> object
+<span class="token punctuation">{</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>$obj <span class="token keyword">instanceof</span> $class<span class="token punctuation">)</span> <span class="token punctuation">{</span>
+        <span class="token keyword">return</span> $obj<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">Exception</span><span class="token punctuation">(</span><span class="token string">'Invalid object type'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre><h2><a tabindex="-1" id="anyvalue" class="sc-hLQRIN dbkbOC"></a>any($value)</h2><p>此函数的目的是将变量类型标注为 <code>php::Var</code> ，而不是原生类型。例如：</p><pre><code class="container--d9e3fe6d">$a <span class="token operator">=</span> <span class="token function">any</span><span class="token punctuation">(</span><span class="token number">123</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+$b <span class="token operator">=</span> <span class="token number">123</span><span class="token punctuation">;</span>
+</code></pre><p>如果不使用 <code>any</code> 函数，变量会声明为 <code>php::Int</code> 类型。将无法用于非整数的赋值，丢失溢出检测等能力。</p><pre><code class="container--d9e3fe6d">$a <span class="token operator">=</span> <span class="token number">10</span><span class="token punctuation">;</span> <span class="token comment">// $a 的类型为 Int</span>
+$b <span class="token operator">=</span> $a <span class="token operator">/</span> <span class="token number">3</span><span class="token punctuation">;</span>  <span class="token comment">// $b 的值为 3 ，类型为整型</span>
+
+$a <span class="token operator">=</span> <span class="token function">any</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// $a 的类型为 Var</span>
+$b <span class="token operator">=</span> $a <span class="token operator">/</span> <span class="token number">3</span><span class="token punctuation">;</span>  <span class="token comment">// $b 的值为 3.33333...，类型为浮点型</span>
+</code></pre><h3><a tabindex="-1" id="垫片函数-2" class="sc-hLQRIN dbkbOC"></a>垫片函数</h3><pre><code class="container--d9e3fe6d"><span class="token keyword">function</span> <span class="token function">any</span><span class="token punctuation">(</span>mixed $var<span class="token punctuation">)</span><span class="token punctuation">:</span> mixed
+<span class="token punctuation">{</span>
+    <span class="token keyword">return</span> $var<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre><h2><a tabindex="-1" id="refvalvalue" class="sc-hLQRIN dbkbOC"></a>refval($value)</h2><p>在动态调用中将值传递修改为引用传递。例如下面的代码：</p><pre><code class="container--d9e3fe6d"><span class="token function">eval</span><span class="token punctuation">(</span><span class="token string">'function retval_test(&amp;$name) { $name .= "refval test"; }'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+$name <span class="token operator">=</span> <span class="token string">'php '</span><span class="token punctuation">;</span>
+<span class="token function">retval_test</span><span class="token punctuation">(</span><span class="token function">refval</span><span class="token punctuation">(</span>$name<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre><p><code>eval()</code> 是一个运行时执行指令的函数，它动态生成了一个<code>retval_test</code>函数。由于在静态编译阶段，根本不存在<code>retval_test</code>函数，因此编译器无法将它的参数识别为引用传递，这时就需要<code>refval()</code>函数显式地将<code>$name</code>转为引用传递。</p><p>而下面的代码是不需要添加<code>refval()</code>的：</p><pre><code class="container--d9e3fe6d">class <span class="token class-name">Request</span> <span class="token punctuation">{</span>
+    public $data<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">function</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{</span>
+    $req <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Request</span><span class="token punctuation">;</span>
+    $req<span class="token operator">-</span><span class="token operator">&gt;</span>data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token string">'get'</span> <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">,</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+    <span class="token function">parse_str</span><span class="token punctuation">(</span><span class="token string">"hello=world"</span><span class="token punctuation">,</span> $req<span class="token operator">-</span><span class="token operator">&gt;</span>data<span class="token punctuation">[</span><span class="token string">'get'</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">var_dump</span><span class="token punctuation">(</span>$req<span class="token operator">-</span><span class="token operator">&gt;</span>data<span class="token punctuation">[</span><span class="token string">'get'</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token string">'hello'</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre><p><code>parse_str()</code>是一个内置函数，在编译期就可以得到它的参数信息，第二个参数是引用类型，因此编译器会自动将参数修改为引用传递，而不需要额外添加<code>refval()</code>函数。</p><h3><a tabindex="-1" id="垫片函数-3" class="sc-hLQRIN dbkbOC"></a>垫片函数</h3><pre><code class="container--d9e3fe6d"><span class="token keyword">function</span> <span class="token operator">&amp;</span><span class="token function">refval</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>$var<span class="token punctuation">)</span>
+<span class="token punctuation">{</span>
+    <span class="token keyword">return</span> $var<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre></section></article>

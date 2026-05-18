@@ -61,4 +61,14 @@ abstract class ReactiveComponent
         $this->fullDirty = false;
         return ['full' => $full, 'groups' => $groups];
     }
+
+    /** v6 M1: 组件布局挂载回调 (子类可覆写做资源初始化) */
+    public function onAttach(string $layoutName): void
+    {
+    }
+
+    /** v6 M1: 组件布局卸载回调 (子类可覆写做资源释放) */
+    public function onDetach(string $layoutName): void
+    {
+    }
 }

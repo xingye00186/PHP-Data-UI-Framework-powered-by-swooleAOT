@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>框架通用性改进规划</title>
+<style>
+:root {
+  --color-bg: #0d1117;
+  --color-surface: #161b22;
+  --color-surface-elevated: #1c2128;
+  --color-text: #e6edf3;
+  --color-text-muted: #8b949e;
+  --color-accent: #7c3aed;
+  --color-accent-text: #ffffff;
+  --color-accent-light: #a78bfa;
+  --color-hover: rgba(124,58,237,0.08);
+  --color-border: #30363d;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #f6f8fa;
+    --color-surface-elevated: #eaeef2;
+    --color-text: #1f2328;
+    --color-text-muted: #656d76;
+    --color-hover: rgba(124,58,237,0.05);
+    --color-border: #d0d7de;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body { font-family: var(--font-family); color: var(--color-text); background: var(--color-bg); line-height: 1.7; padding: 2rem; max-width: 1100px; margin: 0 auto; font-size: 14px; }
+h1 { font-size: 28px; font-weight: 700; margin-bottom: 0.25rem; }
+h2 { font-size: 20px; font-weight: 600; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid var(--color-border); }
+h3 { font-size: 16px; font-weight: 600; margin: 2rem 0 0.75rem; }
+h4 { font-size: 14px; font-weight: 600; margin: 1rem 0 0.5rem; }
+p { margin: 0.5rem 0; }
+ul, ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+li { margin: 0.25rem 0; }
+code { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--color-border); }
+pre { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface); padding: 1rem 1.25rem; border-radius: 8px; border: 1px solid var(--color-border); overflow-x: auto; margin: 0.75rem 0; line-height: 1.6; white-space: pre; }
+a { color: var(--color-accent-light); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.subtitle { color: var(--color-text-muted); font-size: 15px; margin-bottom: 2rem; }
+.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 1.25rem; margin: 0.75rem 0; }
+.card-accent { border-left: 3px solid var(--color-accent); }
+.card-success { border-left: 3px solid var(--color-success); }
+.card-warning { border-left: 3px solid var(--color-warning); }
+.card-danger { border-left: 3px solid var(--color-danger); }
+.card-info { border-left: 3px solid var(--color-info); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-right: 6px; vertical-align: middle; }
+.badge-active { background: rgba(34,197,94,0.15); color: var(--color-success); }
+.badge-next { background: rgba(59,130,246,0.15); color: var(--color-info); }
+.badge-future { background: rgba(124,58,237,0.15); color: var(--color-accent-light); }
+.badge-far { background: var(--color-surface-elevated); color: var(--color-text-muted); }
+table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 13px; }
+th { background: var(--color-surface); font-weight: 600; text-align: left; padding: 8px 12px; border: 1px solid var(--color-border); }
+td { padding: 8px 12px; border: 1px solid var(--color-border); vertical-align: top; }
+tr:hover td { background: var(--color-hover); }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } body { padding: 1rem; } }
+.tag { display: inline-block; font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--color-surface-elevated); color: var(--color-text-muted); margin: 2px 3px 2px 0; }
+</style>
+</head>
+<body>
+
+<h1>框架通用性改进规划</h1>
+<p class="subtitle">让 vue-calc 框架从"calculator 专属"演变为"多应用可复用"的通用框架</p>
+
+<!-- ============================================================ -->
+<h2 id="s1">1. 概述</h2>
+
+<div class="card card-accent">
+<p><strong>目标：</strong>让第二个应用（如 todo-app）能以最小修改复用 vue-calc 框架，无需修改 Application、BaseRenderer 或 main.php。</p>
+</div>
+
+<p>当前 vue-calc 框架在 calculator 应用中运行良好，但其中存在大量硬编码、隐式约定和重复逻辑，导致创建新应用时必须深入修改框架核心文件。本文档系统梳理这些反模式，并提出分阶段改进方案。</p>
+
+<!-- ============================================================ -->
+<h2 id="s2">2. 反模式清单</h2>
+
+<table>
+  <tr><th>编号</th><th>严重程度</th><th>位置</th><th>问题描述</th><th>影响</th></tr>
+  <tr>
+    <td><code>A.1</code></td>
+    <td style="color:var(--color-danger);font-weight:700;">高</td>
+    <td>Application.php</td>
+    <td><code>attachLayout</code> 的 <code>idx</code> 参数无实际用途，循环中 <code>$i+1</code> 赋值无意义</td>
+    <td>接口误导，新应用无法理解</td>
+  </tr>
+  <tr>
+    <td><code>A.2</code></td>
+    <td style="color:var(--color-danger);font-weight:700;">高</td>
+    <td>BaseRenderer.php L82-87</td>
+    <td>文本字号缩放逻辑硬编码（<code>textLen&gt;12</code> 则 <code>24px</code>）为 calculator 专属</td>
+    <td>新应用需要不同排版策略</td>
+  </tr>
+  <tr>
+    <td><code>A.3</code></td>
+    <td style="color:var(--color-danger);font-weight:700;">高</td>
+    <td>BaseRenderer.php L172-179</td>
+    <td>按钮文字样式硬编码（22pt/居中/加粗）</td>
+    <td>新应用按钮风格受限</td>
+  </tr>
+  <tr>
+    <td><code>B.1</code></td>
+    <td style="color:var(--color-danger);font-weight:700;">高</td>
+    <td>Application.php L27-31</td>
+    <td>窗口标题 <code>'VueCalc - SFC Data-Driven App'</code> 硬编码</td>
+    <td>新应用必须改 Application</td>
+  </tr>
+  <tr>
+    <td><code>B.2</code></td>
+    <td style="color:var(--color-danger);font-weight:700;">高</td>
+    <td>main.php L24-25</td>
+    <td>类名 <code>App</code>、组件 ID <code>'MainApp'</code>、<code>initShared(10240)</code> 硬编码</td>
+    <td>新应用必须重写 main.php</td>
+  </tr>
+  <tr>
+    <td><code>B.3</code></td>
+    <td style="color:var(--color-warning);font-weight:700;">中</td>
+    <td>main.php L9-12</td>
+    <td><code>WM_LBUTTONDOWN</code> 等常量在应用层重复定义</td>
+    <td>每个应用都要复制</td>
+  </tr>
+  <tr>
+    <td><code>C.1</code></td>
+    <td style="color:var(--color-danger);font-weight:700;">高</td>
+    <td>编译器→运行时</td>
+    <td>element/button 数据格式完全隐式约定，无文档</td>
+    <td>格式变更导致无声失败</td>
+  </tr>
+  <tr>
+    <td><code>C.2</code></td>
+    <td style="color:var(--color-warning);font-weight:700;">中</td>
+    <td>AppLayout_gen.php</td>
+    <td><code>callLayoutSegment()</code> 未知段名静默返回空数组</td>
+    <td>名称拼写错误难以排查</td>
+  </tr>
+  <tr>
+    <td><code>A.4</code></td>
+    <td style="color:var(--color-warning);font-weight:700;">中</td>
+    <td>RenderContext.php</td>
+    <td>新原语需等 C++ 先实现，框架无法独立演进</td>
+    <td>扩展阻塞</td>
+  </tr>
+  <tr>
+    <td><code>A.5</code></td>
+    <td style="color:var(--color-warning);font-weight:700;">中</td>
+    <td>BaseRenderer + Application</td>
+    <td><code>render()</code> 和 <code>handleClick()</code> 的分层遍历逻辑重复</td>
+    <td>维护两份相同代码</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s3">3. P1 改进项（立即实施，~200行改动）</h2>
+
+<h3>3.1 窗口配置参数化</h3>
+
+<div class="card">
+<p><strong>问题：</strong>窗口标题、尺寸在 Application.php 和 main.php 中硬编码。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>SFC 编译器在 <code>AppLayout_gen.php</code> 中生成 <code>getApplicationConfig()</code></li>
+  <li>返回 <code>['windowTitle' =&gt; ..., 'windowWidth' =&gt; WINDOW_WIDTH, 'windowHeight' =&gt; WINDOW_HEIGHT]</code></li>
+  <li><code>Application.initWindow()</code> 读取该函数而非硬编码</li>
+</ul>
+
+<p><strong>生成代码示例：</strong></p>
+<pre>function getApplicationConfig(): array {
+    return [
+        'windowTitle'  =&gt; 'TodoApp - SFC Data-Driven App',
+        'windowWidth'  =&gt; WINDOW_WIDTH,
+        'windowHeight' =&gt; WINDOW_HEIGHT,
+    ];
+}</pre>
+</div>
+
+<h3>3.2 事件常量集中化</h3>
+
+<div class="card">
+<p><strong>问题：</strong><code>WM_LBUTTONDOWN</code>、<code>SW_SHOW</code> 等常量在每个应用的 main.php 中重复定义。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>创建 <code>framework/WinConstants.php</code> 集中定义 SW_SHOW, WM_LBUTTONDOWN, WM_QUIT 等</li>
+  <li>main.php 改为 <code>require __DIR__ . '/../../framework/WinConstants.php';</code></li>
+</ul>
+
+<p><strong>WinConstants.php 示例：</strong></p>
+<pre>&lt;?php
+// framework/WinConstants.php — Windows 消息与显示常量
+const SW_SHOW            = 5;
+const WM_LBUTTONDOWN    = 0x0201;
+const WM_LBUTTONUP      = 0x0202;
+const WM_MOUSEMOVE      = 0x0200;
+const WM_QUIT           = 0x0012;
+const WM_DESTROY        = 0x0002;
+const WM_PAINT          = 0x000F;
+const WS_OVERLAPPEDWINDOW = 0x00CF0000;
+const CW_USEDEFAULT     = -2147483648;</pre>
+</div>
+
+<h3>3.3 attachLayout 接口简化</h3>
+
+<div class="card">
+<p><strong>问题：</strong><code>attachLayout(string $name, int $layoutIdx)</code> 的第二个参数无实际用途。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>去掉 <code>attachLayout</code> 的第二个参数，签名改为 <code>attachLayout(string $name)</code></li>
+  <li><code>$activeLayouts</code> 改为纯名称列表 <code>string[]</code></li>
+  <li>Application 改为简单循环注册</li>
+</ul>
+
+<p><strong>修改前：</strong></p>
+<pre>foreach ($layoutNames as $i =&gt; $name) {
+    $app-&gt;attachLayout($name, $i + 1);
+}</pre>
+
+<p><strong>修改后：</strong></p>
+<pre>foreach ($layoutNames as $name) {
+    $app-&gt;attachLayout($name);
+}</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s4">4. P2 改进项（短期）</h2>
+
+<h3>4.1 文本排版外部化</h3>
+
+<div class="card">
+<p><strong>问题：</strong>BaseRenderer 中文本字号缩放逻辑（<code>textLen &gt; 12</code> 则 <code>24px</code>）为 calculator 专属策略。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>元素数据中添加 <code>autoResize</code> 字段控制是否自动缩放</li>
+  <li>BaseRenderer 提供 <code>protected autoResizeFont()</code> 方法，应用可覆写</li>
+</ul>
+
+<p><strong>数据格式扩展：</strong></p>
+<pre>[
+    'type'       =&gt; 'element',
+    'text'       =&gt; '0',
+    'autoResize' =&gt; true,   // 新字段：是否自动缩放字号
+    'rect'       =&gt; [0, 0, 100, 40],
+]</pre>
+
+<p><strong>BaseRenderer 默认实现：</strong></p>
+<pre>protected function autoResizeFont(string $text, float $baseSize, array $rect): float {
+    if (strlen($text) &gt; 12) {
+        return 24.0;
+    }
+    return $baseSize;
+}</pre>
+</div>
+
+<h3>4.2 按钮样式配置化</h3>
+
+<div class="card">
+<p><strong>问题：</strong>按钮文字样式硬编码（22pt/居中/加粗），新应用无法自定义。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>按钮数据结构添加 <code>labelFontSize</code>, <code>labelAlign</code>, <code>labelColor</code>, <code>labelBold</code></li>
+  <li>BaseRenderer 读取字段而非硬编码</li>
+</ul>
+
+<p><strong>数据格式扩展：</strong></p>
+<pre>[
+    'type'          =&gt; 'button',
+    'text'          =&gt; '7',
+    'labelFontSize' =&gt; 22,     // 新字段：字号（pt）
+    'labelAlign'    =&gt; 'center', // 新字段：对齐方式
+    'labelColor'    =&gt; '#ffffff', // 新字段：文字颜色
+    'labelBold'     =&gt; true,     // 新字段：是否加粗
+    'rect'          =&gt; [0, 0, 80, 60],
+]</pre>
+</div>
+
+<h3>4.3 布局收集逻辑提取</h3>
+
+<div class="card">
+<p><strong>问题：</strong><code>render()</code> 和 <code>handleClick()</code> 的分层遍历逻辑在 BaseRenderer 和 Application 中重复实现。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>提取 <code>gatherLayout()</code> 和 <code>getMaxLayer()</code> 为 BaseRenderer 公共方法</li>
+  <li>Application.handleClick() 调用这些方法而非重复实现</li>
+</ul>
+
+<p><strong>提取方法签名：</strong></p>
+<pre>public function gatherLayout(string $layoutName): array
+public function getMaxLayer(array $layout): int</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s5">5. P3 改进项（长期架构）</h2>
+
+<h3>5.1 Application 基类化</h3>
+
+<div class="card">
+<p><strong>问题：</strong>每个新应用都需要完整实现 Application 类，无法复用启动流程。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>创建 <code>framework/ApplicationBase.php</code> 抽象类</li>
+  <li>定义 <code>createComponent()</code>, <code>getApplicationConfig()</code> 抽象方法</li>
+  <li>提供 <code>bootstrap()</code> 模板方法标准化启动流程</li>
+</ul>
+
+<p><strong>ApplicationBase 骨架：</strong></p>
+<pre>abstract class ApplicationBase {
+    abstract protected function createComponent(string $class): ReactiveComponent;
+    abstract protected function getApplicationConfig(): array;
+
+    public function bootstrap(): void {
+        $config = $this-&gt;getApplicationConfig();
+        $this-&gt;initWindow($config);
+        $this-&gt;registerComponents();
+        $this-&gt;runMessageLoop();
+    }
+}</pre>
+</div>
+
+<h3>5.2 布局数据格式规范</h3>
+
+<div class="card">
+<p><strong>问题：</strong>element/button/condition 数据格式完全隐式约定，无文档。格式变更导致无声失败。</p>
+<p><strong>方案：</strong></p>
+<ul>
+  <li>创建 <code>framework/LAYOUT_DATA_FORMAT.md</code></li>
+  <li>显式定义 element/button/condition 所有字段、类型、默认值</li>
+</ul>
+
+<p><strong>规范示例（element）：</strong></p>
+<pre>| 字段       | 类型    | 必填 | 默认值  | 说明              |
+|-----------|---------|------|---------|-------------------|
+| type      | string  | 是   | -       | 固定值 "element"  |
+| text      | string  | 是   | -       | 显示文本          |
+| rect      | int[4]  | 是   | -       | [x,y,w,h]        |
+| color     | string  | 否   | "#fff"  | 背景色            |
+| autoResize| bool    | 否   | false   | 是否自动缩放字号  |</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s6">6. 验收标准</h2>
+
+<div class="card card-success">
+<p><strong>目标验收场景：</strong>新应用 todo-app 启动流程：<strong>编写 .vue 文件 → 运行 SFC 编译 → AOT 编译 → 运行</strong>。无需修改 Application、BaseRenderer 或 main.php 的框架逻辑。</p>
+</div>
+
+<div class="card">
+<p><strong>具体验收检查项：</strong></p>
+<ul>
+  <li>✅ todo-app 的窗口标题由编译器生成，无需手动修改 Application</li>
+  <li>✅ todo-app 的 main.php 仅 require 框架常量文件，无重复定义</li>
+  <li>✅ todo-app 可通过数据字段自定义按钮样式，无需修改 BaseRenderer</li>
+  <li>✅ todo-app 可通过 <code>autoResize</code> 控制文本缩放行为</li>
+  <li>✅ 布局段名称拼写错误在编译期报告而非静默失败</li>
+</ul>
+</div>
+
+<hr style="margin:3rem 0;border:none;border-top:1px solid var(--color-border);">
+<p style="text-align:center;color:var(--color-text-muted);font-size:12px;">VueCalc Framework — 框架通用性改进规划</p>
+
+</body>
+</html>

@@ -2,16 +2,20 @@
 
 <cite>
 **本文档引用的文件**
-- [ReactiveComponent.php](file://src/ReactiveComponent.php)
-- [Calculator.gen.php](file://src/Calculator.gen.php)
-- [CalculatorLayout_gen.php](file://src/CalculatorLayout_gen.php)
-- [ChangeQueue.php](file://src/ChangeQueue.php)
-- [main.php](file://main.php)
-- [aot-validator.php](file://tools/compiler/aot-validator.php)
-- [sfc-compiler.php](file://tools/sfc-compiler.php)
-- [sfc-compiler-test.php](file://tests/sfc-compiler-test.php)
-- [verify-layout.php](file://tests/verify-layout.php)
+- [ReactiveComponent.php](file://framework/ReactiveComponent.php)
+- [BaseRenderer.php](file://framework/BaseRenderer.php)
+- [ChangeQueue.php](file://framework/ChangeQueue.php)
+- [Application.php](file://apps/calculator/Application.php)
+- [main.php](file://apps/calculator/main.php)
+- [App.gen.php](file://apps/calculator/gen/App.gen.php)
 </cite>
+
+## 更新摘要
+**变更内容**
+- 新增组级脏标记追踪功能，包括`$dirtyGroups`和`$fullDirty`属性
+- 添加`markGroupDirty()`、`markFullDirty()`和`consumeDirty()`方法
+- 更新渲染器以支持新的脏状态消费机制
+- 增强响应式系统以支持增量渲染的准备工作
 
 ## 目录
 1. [简介](#简介)
@@ -19,10 +23,11 @@
 3. [核心组件](#核心组件)
 4. [架构概览](#架构概览)
 5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考虑](#性能考虑)
-8. [故障排除指南](#故障排除指南)
-9. [结论](#结论)
+6. [组级脏标记追踪系统](#组级脏标记追踪系统)
+7. [依赖关系分析](#依赖关系分析)
+8. [性能考虑](#性能考虑)
+9. [故障排除指南](#故障排除指南)
+10. [结论](#结论)
 
 ## 简介
 
@@ -30,41 +35,45 @@ ReactiveComponent是Vue-Calc项目中的响应式组件基类，专门为Swoole 
 
 Vue-Calc是一个基于单文件组件(SFC)模式的桌面计算器应用，采用"逻辑PHP + C++ GDI渲染"的混合架构。ReactiveComponent作为整个响应式系统的核心，为所有UI组件提供了统一的状态管理和变更通知机制。
 
+**最新更新**：基类现已支持组级脏标记追踪，为未来的增量渲染提供基础支持。
+
 ## 项目结构
 
 Vue-Calc项目采用模块化的文件组织方式，主要包含以下关键目录和文件：
 
 ```mermaid
 graph TB
-subgraph "源代码结构"
-SRC[src/]
-TOOLS[tools/]
-TESTS[tests/]
-SRC --> RC[ReactiveComponent.php]
-SRC --> CALC[Calculator.gen.php]
-SRC --> LAYOUT[CalculatorLayout_gen.php]
-SRC --> CQ[ChangeQueue.php]
-SRC --> MAIN[main.php]
-TOOLS --> COMPILER[sfc-compiler.php]
-TOOLS --> VALIDATOR[aot-validator.php]
-TESTS --> UNIT[sfc-compiler-test.php]
-TESTS --> VERIFY[verify-layout.php]
+subgraph "框架层"
+FRAMEWORK[framework/]
+REACTIVE[ReactiveComponent.php]
+RENDERER[BaseRenderer.php]
+CHANGEQ[ChangeQueue.php]
+end
+subgraph "应用层"
+APPS[apps/calculator/]
+APPLICATION[Application.php]
+MAIN[main.php]
+GEN[gen/App.gen.php]
 end
 subgraph "生成文件"
-GEN1[Calculator.gen.php]
-GEN2[CalculatorLayout_gen.php]
+APP_GEN[App.gen.php]
 end
-COMPILER --> GEN1
-COMPILER --> GEN2
+FRAMEWORK --> REACTIVE
+FRAMEWORK --> RENDERER
+FRAMEWORK --> CHANGEQ
+APPS --> APPLICATION
+APPS --> MAIN
+APPS --> GEN
+RENDERER --> APP_GEN
 ```
 
 **图表来源**
-- [ReactiveComponent.php:1-35](file://src/ReactiveComponent.php#L1-L35)
-- [sfc-compiler.php:1-210](file://tools/sfc-compiler.php#L1-L210)
+- [ReactiveComponent.php:1-65](file://framework/ReactiveComponent.php#L1-L65)
+- [BaseRenderer.php:1-151](file://framework/BaseRenderer.php#L1-L151)
 
 **章节来源**
-- [ReactiveComponent.php:1-35](file://src/ReactiveComponent.php#L1-L35)
-- [sfc-compiler.php:1-210](file://tools/sfc-compiler.php#L1-L210)
+- [ReactiveComponent.php:1-65](file://framework/ReactiveComponent.php#L1-L65)
+- [BaseRenderer.php:1-151](file://framework/BaseRenderer.php#L1-L151)
 
 ## 核心组件
 
@@ -85,14 +94,19 @@ ReactiveComponent基类采用了精心设计的架构决策，主要体现在以
 ```mermaid
 classDiagram
 class ReactiveComponent {
-+static ChangeQueue queue
-+static string componentId
++?ChangeQueue queue
++string componentId
 +bool dirty
 +string template
++array dirtyGroups
++bool fullDirty
 +__construct(componentId)
-+static initShared(tableSize)
++initShared(tableSize)
++markGroupDirty(groupId)
++markFullDirty()
++consumeDirty() array
 }
-class Calculator {
+class App {
 +string display
 +string expression
 +string operand1
@@ -107,16 +121,16 @@ class Calculator {
 +backspace()
 +handleButton(label)
 }
-ReactiveComponent <|-- Calculator
+ReactiveComponent <|-- App
 ```
 
 **图表来源**
-- [ReactiveComponent.php:11-35](file://src/ReactiveComponent.php#L11-L35)
-- [Calculator.gen.php:9-174](file://src/Calculator.gen.php#L9-L174)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
+- [App.gen.php:9-262](file://apps/calculator/gen/App.gen.php#L9-L262)
 
 **章节来源**
-- [ReactiveComponent.php:11-35](file://src/ReactiveComponent.php#L11-L35)
-- [Calculator.gen.php:9-174](file://src/Calculator.gen.php#L9-L174)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
+- [App.gen.php:9-262](file://apps/calculator/gen/App.gen.php#L9-L262)
 
 ## 架构概览
 
@@ -129,13 +143,13 @@ UI[用户界面]
 INPUT[鼠标输入]
 end
 subgraph "应用控制层"
-APP[CalcApp]
-RENDERER[CalcRenderer]
+APP[Application]
+RENDERER[BaseRenderer]
 end
 subgraph "响应式系统"
 BASE[ReactiveComponent]
 QUEUE[ChangeQueue]
-COMPONENT[Calculator]
+COMPONENT[App]
 end
 subgraph "渲染引擎"
 LAYOUT[布局数据]
@@ -151,16 +165,16 @@ QUEUE --> RENDERER
 RENDERER --> LAYOUT
 LAYOUT --> GDI
 GDI --> UI
-note1["数据流: 用户点击 → CalcApp.handleClick() → Calculator.handleButton() → 响应式属性变更 → dirty → CalcRenderer.render() → C++绘制"]
+note1["数据流: 用户点击 → Application.handleClick() → App.handleButton() → 响应式属性变更 → dirty → BaseRenderer.render() → C++绘制"]
 ```
 
 **图表来源**
-- [main.php:26-259](file://main.php#L26-L259)
-- [ReactiveComponent.php:11-35](file://src/ReactiveComponent.php#L11-L35)
+- [Application.php:43-98](file://apps/calculator/Application.php#L43-L98)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
 
 **章节来源**
-- [main.php:26-259](file://main.php#L26-L259)
-- [ReactiveComponent.php:11-35](file://src/ReactiveComponent.php#L11-L35)
+- [Application.php:43-98](file://apps/calculator/Application.php#L43-L98)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
 
 ## 详细组件分析
 
@@ -168,16 +182,16 @@ note1["数据流: 用户点击 → CalcApp.handleClick() → Calculator.handleBu
 
 #### 成员变量设计
 
-ReactiveComponent基类包含了四个核心成员变量，每个都有特定的作用机制：
+ReactiveComponent基类包含了六个核心成员变量，每个都有特定的作用机制：
 
 **1. $queue全局变更队列**
-- 类型：`protected static ?ChangeQueue`
+- 类型：`protected ?ChangeQueue`
 - 作用：存储所有组件的变更通知
 - 初始化：通过`initShared()`静态方法进行
 - 生命周期：进程级单例，所有组件共享
 
 **2. $componentId组件标识**
-- 类型：`protected static string`
+- 类型：`protected string`
 - 作用：唯一标识当前组件实例
 - 默认值：如果未指定则使用类名
 - 用途：用于组件识别和调试
@@ -193,26 +207,38 @@ ReactiveComponent基类包含了四个核心成员变量，每个都有特定的
 - 作用：可选的模板文件路径
 - 设计：为未来可能的模板系统预留接口
 
+**5. $dirtyGroups组级脏标记**
+- 类型：`protected array`
+- 作用：跟踪特定UI组的脏状态
+- 设计：键为组ID，值为布尔标记
+- 用途：支持增量渲染的分组机制
+
+**6. $fullDirty全量脏标记**
+- 类型：`protected bool`
+- 作用：标记是否需要全量重绘
+- 设计：默认为true，确保首次渲染
+- 用途：支持全量重绘和增量渲染的切换
+
 #### 构造函数初始化流程
 
 ```mermaid
 sequenceDiagram
 participant Client as "客户端代码"
 participant Base as "ReactiveComponent"
-participant Child as "Calculator"
-Client->>Base : new Calculator("MainCalculator")
+participant Child as "App"
+Client->>Base : new App("MainApp")
 Base->>Base : 设置componentId
 Base->>Child : 调用子类构造函数
 Child->>Child : 初始化子类属性
 Child->>Base : 返回父类构造完成
 Base-->>Client : 返回完整组件实例
-Note over Base : componentId = "MainCalculator"
+Note over Base : componentId = "MainApp"
 Note over Child : 子类属性初始化完成
 ```
 
 **图表来源**
-- [ReactiveComponent.php:25-28](file://src/ReactiveComponent.php#L25-L28)
-- [Calculator.gen.php:170-173](file://src/Calculator.gen.php#L170-L173)
+- [ReactiveComponent.php:31-34](file://framework/ReactiveComponent.php#L31-L34)
+- [App.gen.php:258-262](file://apps/calculator/gen/App.gen.php#L258-L262)
 
 #### 静态初始化方法initShared
 
@@ -229,8 +255,8 @@ Note over Child : 子类属性初始化完成
 - 内存管理：环形缓冲区实现，支持高效的数据存储和检索
 
 **章节来源**
-- [ReactiveComponent.php:30-33](file://src/ReactiveComponent.php#L30-L33)
-- [ChangeQueue.php:11-56](file://src/ChangeQueue.php#L11-L56)
+- [ReactiveComponent.php:36-39](file://framework/ReactiveComponent.php#L36-L39)
+- [ChangeQueue.php:18-56](file://framework/ChangeQueue.php#L18-L56)
 
 ### AOT编译器兼容性设计
 
@@ -305,7 +331,7 @@ ChangeQueue --> BufferEntry : "存储"
 ```
 
 **图表来源**
-- [ChangeQueue.php:11-56](file://src/ChangeQueue.php#L11-L56)
+- [ChangeQueue.php:11-57](file://framework/ChangeQueue.php#L11-L57)
 
 #### 性能特征
 
@@ -315,15 +341,15 @@ ChangeQueue --> BufferEntry : "存储"
 - **容量管理**：默认4096个条目，可根据需要调整
 
 **章节来源**
-- [ChangeQueue.php:11-56](file://src/ChangeQueue.php#L11-L56)
+- [ChangeQueue.php:11-57](file://framework/ChangeQueue.php#L11-L57)
 
-### Calculator组件继承示例
+### App组件继承示例
 
-Calculator作为ReactiveComponent的具体实现，展示了正确的继承和使用方式：
+App作为ReactiveComponent的具体实现，展示了正确的继承和使用方式：
 
 #### 属性声明模式
 
-Calculator类遵循ReactiveComponent的设计原则：
+App类遵循ReactiveComponent的设计原则：
 
 **属性声明：**
 - 明确声明所有响应式属性
@@ -337,13 +363,104 @@ Calculator类遵循ReactiveComponent的设计原则：
 
 #### 方法实现模式
 
-Calculator的每个公共方法都遵循相同的模式：
+App的每个公共方法都遵循相同的模式：
 1. 修改内部状态
 2. 设置脏标记
 3. 保持幂等性
 
 **章节来源**
-- [Calculator.gen.php:9-174](file://src/Calculator.gen.php#L9-L174)
+- [App.gen.php:9-262](file://apps/calculator/gen/App.gen.php#L9-L262)
+
+## 组级脏标记追踪系统
+
+### 新增功能概述
+
+ReactiveComponent基类新增了组级脏标记追踪系统，为未来的增量渲染提供基础支持。这一系统包括三个核心组件：
+
+1. **$dirtyGroups** - 组级脏标记映射表
+2. **$fullDirty** - 全量重绘标记
+3. **相关方法** - 标记和消费脏状态的方法
+
+### 组级脏标记机制
+
+```mermaid
+stateDiagram-v2
+[*] --> Idle
+Idle --> DirtyState : markGroupDirty(groupId)
+DirtyState --> GroupDirty : 设置dirtyGroups[groupId] = true
+GroupDirty --> FullDirty : markFullDirty()
+GroupDirty --> DirtyState : 其他组标记
+FullDirty --> Rendering : consumeDirty()
+DirtyState --> Rendering : consumeDirty()
+Rendering --> Idle : 重置状态
+```
+
+**图表来源**
+- [ReactiveComponent.php:25-63](file://framework/ReactiveComponent.php#L25-L63)
+
+### 核心方法详解
+
+#### markGroupDirty方法
+
+`markGroupDirty()`方法用于标记特定UI组为脏状态：
+
+**功能特性：**
+- 接收组ID作为参数
+- 将对应组标记为脏
+- 自动设置全局脏标记
+- 支持多组同时标记
+
+**使用场景：**
+- UI布局中的独立区域更新
+- 条件渲染元素的局部重绘
+- 按钮状态的精准更新
+
+#### markFullDirty方法
+
+`markFullDirty()`方法用于标记全量重绘需求：
+
+**功能特性：**
+- 设置`$fullDirty = true`
+- 自动设置全局脏标记
+- 覆盖所有组级标记
+- 确保完整的UI重绘
+
+**使用场景：**
+- 首次渲染启动
+- 布局结构重大变化
+- 主题切换或样式重载
+
+#### consumeDirty方法
+
+`consumeDirty()`方法用于消费和重置脏状态：
+
+**功能特性：**
+- 返回包含`full`和`groups`的数组
+- 重置`$dirtyGroups`映射表
+- 重置`$fullDirty`标记
+- 为下次渲染准备状态
+
+**返回结构：**
+```php
+[
+    'full' => true,      // 是否需要全量重绘
+    'groups' => []       // 脏组列表
+]
+```
+
+### 渲染器集成
+
+BaseRenderer已经集成了新的脏状态消费机制：
+
+**当前实现特点：**
+- 调用`$component->consumeDirty()`获取脏状态
+- 当前仍执行全量重绘
+- 为未来的增量渲染预留接口
+- 保持向后兼容性
+
+**章节来源**
+- [ReactiveComponent.php:41-63](file://framework/ReactiveComponent.php#L41-L63)
+- [BaseRenderer.php:88-94](file://framework/BaseRenderer.php#L88-L94)
 
 ## 依赖关系分析
 
@@ -356,43 +473,43 @@ RC[ReactiveComponent]
 CQ[ChangeQueue]
 end
 subgraph "业务层"
-CALC[Calculator]
+APP[App]
 LAYOUT[CalculatorLayout]
 end
 subgraph "应用层"
-APP[CalcApp]
-RENDERER[CalcRenderer]
+APP_CTRL[Application]
+RENDERER[BaseRenderer]
 end
 subgraph "工具层"
 COMPILER[SFC Compiler]
 VALIDATOR[AOT Validator]
 end
 RC --> CQ
-CALC --> RC
-RENDERER --> CALC
-APP --> CALC
-APP --> RENDERER
-COMPILER --> CALC
+APP --> RC
+RENDERER --> APP
+APP_CTRL --> APP
+APP_CTRL --> RENDERER
+COMPILER --> APP
 COMPILER --> LAYOUT
 VALIDATOR --> COMPILER
 ```
 
 **图表来源**
-- [ReactiveComponent.php:11-35](file://src/ReactiveComponent.php#L11-L35)
-- [Calculator.gen.php:9-174](file://src/Calculator.gen.php#L9-L174)
-- [main.php:26-259](file://main.php#L26-L259)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
+- [App.gen.php:9-262](file://apps/calculator/gen/App.gen.php#L9-L262)
+- [Application.php:10-139](file://apps/calculator/Application.php#L10-L139)
 
 ### 关键依赖链
 
 1. **ReactiveComponent → ChangeQueue**：基类依赖队列系统
-2. **Calculator → ReactiveComponent**：组件继承基类
-3. **CalcRenderer → Calculator**：渲染器依赖组件状态
-4. **CalcApp → CalcRenderer**：应用控制渲染流程
+2. **App → ReactiveComponent**：组件继承基类
+3. **BaseRenderer → App**：渲染器依赖组件状态
+4. **Application → BaseRenderer**：应用控制渲染流程
 5. **SFC Compiler → AOT Validator**：编译器依赖验证器
 
 **章节来源**
-- [ReactiveComponent.php:11-35](file://src/ReactiveComponent.php#L11-L35)
-- [main.php:26-259](file://main.php#L26-L259)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
+- [Application.php:43-98](file://apps/calculator/Application.php#L43-L98)
 
 ## 性能考虑
 
@@ -405,12 +522,17 @@ ReactiveComponent的性能设计考虑了多个方面：
 - 避免不必要的重绘
 - 支持批量状态更新
 
-**2. 环形缓冲区**
+**2. 组级脏标记优化**
+- 精确的UI区域更新
+- 减少重绘范围
+- 为增量渲染做准备
+
+**3. 环形缓冲区**
 - 高效的内存管理
 - 避免频繁的内存分配
 - 支持高并发场景
 
-**3. 显式路由分发**
+**4. 显式路由分发**
 - 避免反射调用开销
 - 提供编译时优化机会
 - 减少运行时分支判断
@@ -420,6 +542,7 @@ ReactiveComponent的性能设计考虑了多个方面：
 - **静态属性共享**：组件间共享队列实例
 - **紧凑的数据结构**：最小化内存占用
 - **及时清理**：避免内存泄漏
+- **组级标记复用**：减少重复状态存储
 
 ## 故障排除指南
 
@@ -428,7 +551,7 @@ ReactiveComponent的性能设计考虑了多个方面：
 **问题1：组件无法重绘**
 - 检查是否设置了`$this->dirty = true`
 - 确认渲染循环正确检查脏标记
-- 验证`CalcRenderer`的`getBindValue`方法
+- 验证`BaseRenderer`的`render()`方法
 
 **问题2：AOT编译失败**
 - 检查文件名是否包含多余点号
@@ -440,9 +563,19 @@ ReactiveComponent的性能设计考虑了多个方面：
 - 检查是否有循环引用
 - 定期清理临时对象
 
+**问题4：组级脏标记失效**
+- 确认使用`markGroupDirty()`而非直接设置
+- 检查组ID是否正确传递
+- 验证`consumeDirty()`方法的调用时机
+
+**问题5：全量重绘性能问题**
+- 分析UI布局是否过于复杂
+- 考虑拆分大组件为多个小组件
+- 实现更精细的组级标记策略
+
 **章节来源**
-- [main.php:214-221](file://main.php#L214-L221)
-- [aot-validator.php:36-106](file://tools/compiler/aot-validator.php#L36-L106)
+- [Application.php:84-92](file://apps/calculator/Application.php#L84-L92)
+- [BaseRenderer.php:88-94](file://framework/BaseRenderer.php#L88-L94)
 
 ## 结论
 
@@ -452,15 +585,18 @@ ReactiveComponent基类代表了一个精心设计的响应式系统架构，其
 - AOT兼容性确保了编译时优化
 - 明确的API设计提高了代码可维护性
 - 手动脏标记提供了精确的控制能力
+- 组级脏标记为增量渲染奠定基础
 
 **架构设计优势：**
 - 清晰的职责分离便于扩展
 - 环形缓冲区提供了高效的变更通知
 - 显式路由分发避免了运行时开销
+- 新的脏标记系统支持未来的性能优化
 
 **实践价值：**
 - 为桌面应用的响应式开发提供了可靠的基础
 - 展示了如何在受限环境中实现高性能的响应式系统
 - 为其他类似项目提供了可复用的架构模式
+- 为增量渲染技术的引入做好了充分准备
 
-通过遵循ReactiveComponent的设计原则，开发者可以构建出既符合AOT编译器要求又具有良好性能表现的响应式组件系统。
+通过遵循ReactiveComponent的设计原则，开发者可以构建出既符合AOT编译器要求又具有良好性能表现的响应式组件系统。新增的组级脏标记追踪功能为未来的性能优化和功能扩展提供了坚实的基础。

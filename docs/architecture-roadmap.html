@@ -1276,6 +1276,30 @@ Phase 4: v6+
   <p style="margin-top:8px;font-size:13px;color:var(--color-text-muted);">这些是后续所有阶段的基础设施 &mdash; v5 M4 的 group_id 在 layer 上叠加组维度，v6 M1 的分段布局利用 layer 进行活跃判断。</p>
 </div>
 
+<!-- ============================================================ -->
+<h2 id="s16">16. 框架通用性改进里程碑</h2>
+
+<h3>v6 M1.1 — 多应用复用基础</h3>
+<table>
+  <tr><th>改进项</th><th>优先级</th><th>涉及文件</th><th>说明</th></tr>
+  <tr><td>窗口配置参数化</td><td style="color:var(--color-danger);font-weight:700;">P1</td><td>sfc-compiler.php, Application.php</td><td>生成 getApplicationConfig()，Application 读取而非硬编码</td></tr>
+  <tr><td>事件常量集中化</td><td style="color:var(--color-danger);font-weight:700;">P1</td><td>framework/WinConstants.php, main.php</td><td>Windows 消息常量从应用提取到框架</td></tr>
+  <tr><td>attachLayout 接口简化</td><td style="color:var(--color-danger);font-weight:700;">P1</td><td>BaseRenderer.php, Application.php</td><td>去掉无用的 idx 参数</td></tr>
+  <tr><td>文本排版外部化</td><td style="color:var(--color-warning);font-weight:700;">P2</td><td>BaseRenderer.php, sfc-compiler.php</td><td>通过 autoResize 元数据控制字号缩放</td></tr>
+  <tr><td>按钮样式配置化</td><td style="color:var(--color-warning);font-weight:700;">P2</td><td>BaseRenderer.php, sfc-compiler.php</td><td>labelFontSize/labelAlign 加入数据结构</td></tr>
+  <tr><td>布局收集逻辑提取</td><td style="color:var(--color-warning);font-weight:700;">P2</td><td>BaseRenderer.php, Application.php</td><td>gatherLayout() + getMaxLayer() 公共方法</td></tr>
+  <tr><td>Application 基类化</td><td style="color:var(--color-info);font-weight:700;">P3</td><td>framework/ApplicationBase.php</td><td>标准启动流程模板方法</td></tr>
+  <tr><td>布局数据格式规范</td><td style="color:var(--color-info);font-weight:700;">P3</td><td>framework/LAYOUT_DATA_FORMAT.md</td><td>element/button/condition 字段显式定义</td></tr>
+</table>
+
+<h3>验收标准</h3>
+<div class="card card-success">
+<p>新应用（todo-app）启动流程：编写 .vue 文件 → SFC 编译 → AOT 编译 → 运行。<strong>无需修改</strong> Application、BaseRenderer 或 main.php 的框架逻辑。</p>
+</div>
+
+<h3>详细规划</h3>
+<p>完整的反模式清单、改进方案和代码示例见 <a href="框架通用性改进规划.html">框架通用性改进规划</a>。</p>
+
 <hr style="margin:3rem 0;border:none;border-top:1px solid var(--color-border);">
 <p style="text-align:center;color:var(--color-text-muted);font-size:12px;">VueCalc Framework Architecture Roadmap &mdash; Generated from vue-dialog-overlay-pattern.md</p>
 

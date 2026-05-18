@@ -11,6 +11,7 @@
 - [ast-nodes.php](file://framework/compiler/ast-nodes.php)
 - [script-analyzer.php](file://framework/compiler/script-analyzer.php)
 - [ReactiveComponent.php](file://framework/ReactiveComponent.php)
+- [BaseRenderer.php](file://framework/BaseRenderer.php)
 - [Application.php](file://apps/calculator/Application.php)
 - [App.gen.php](file://apps/calculator/gen/App.gen.php)
 - [AppLayout_gen.php](file://apps/calculator/gen/AppLayout_gen.php)
@@ -20,11 +21,11 @@
 
 ## 更新摘要
 **变更内容**
-- 全面重构递归下降解析器架构，替代旧的正则表达式解析器
-- 新增组件注册系统和组件引用解析功能
-- 增强AST节点定义，支持组件引用和层管理
-- 重构代码生成流程，增加条件渲染和自动脏标记注入
-- 实现v5 M2架构的完整功能集
+- 新增组件边界标记(groupId)功能，为每个AST节点添加组件标识
+- 实现overlay层分配逻辑，支持组件级别的分层渲染
+- 增强渲染器的两阶段渲染机制，实现分层绘制和命中测试
+- 更新AST节点定义，支持layer和groupId属性
+- 重构组件解析流程，集成overlay层分配和组件边界标记
 
 ## 目录
 1. [简介](#简介)
@@ -39,7 +40,7 @@
 10. [附录](#附录)
 
 ## 简介
-本文件为SFC（Single File Component）编译器系统的技术文档，面向希望理解并扩展该编译器的开发者。文档覆盖从.vue文件到.php生成文件的完整转换流程，深入解析全新的递归下降解析器架构，阐述组件注册系统如何实现组件引用解析，解释增强的AST节点定义与条件渲染支持，并详述自动脏标记注入和AOT验证器的工作原理。同时提供编译流程图与关键算法实现细节，帮助高级开发者理解和修改编译器行为。
+本文件为SFC（Single File Component）编译器系统的技术文档，面向希望理解并扩展该编译器的开发者。文档覆盖从.vue文件到.php生成文件的完整转换流程，深入解析全新的递归下降解析器架构，阐述组件注册系统如何实现组件引用解析，解释增强的AST节点定义与条件渲染支持，以及新增的组件边界标记和overlay层分配功能。同时详述自动脏标记注入、AOT验证器的工作原理，以及两阶段渲染机制的实现细节，帮助高级开发者理解和修改编译器行为。
 
 ## 项目结构
 该项目采用"框架模块 + 示例应用 + 生成文件 + 运行时"的分层组织：
@@ -65,6 +66,7 @@ LAYOUT["AppLayout_gen.php"]
 end
 subgraph "运行时"
 RC["ReactiveComponent.php"]
+BR["BaseRenderer.php<br/>两阶段渲染"]
 APP["Application.php<br/>CalcRenderer/CalcApp"]
 end
 SFC --> TP
@@ -79,57 +81,63 @@ SFC --> AV
 SFC --> GEN
 SFC --> LAYOUT
 GEN --> RC
-LAYOUT --> APP
-RC --> APP
+LAYOUT --> BR
+RC --> BR
+BR --> APP
 ```
 
 **图表来源**
-- [sfc-compiler.php:1-485](file://framework/sfc-compiler.php#L1-L485)
-- [template-parser.php:1-866](file://framework/compiler/template-parser.php#L1-L866)
+- [sfc-compiler.php:1-487](file://framework/sfc-compiler.php#L1-L487)
+- [template-parser.php:1-869](file://framework/compiler/template-parser.php#L1-L869)
 - [component-registry.php:1-70](file://framework/compiler/component-registry.php#L1-L70)
 - [css-mappings.php:1-210](file://framework/compiler/css-mappings.php#L1-L210)
 - [aot-validator.php:1-169](file://framework/compiler/aot-validator.php#L1-L169)
-- [ast-nodes.php:1-208](file://framework/compiler/ast-nodes.php#L1-L208)
+- [ast-nodes.php:1-211](file://framework/compiler/ast-nodes.php#L1-L211)
 - [script-analyzer.php:1-281](file://framework/compiler/script-analyzer.php#L1-L281)
 - [App.gen.php:1-262](file://apps/calculator/gen/App.gen.php#L1-L262)
-- [AppLayout_gen.php:1-523](file://apps/calculator/gen/AppLayout_gen.php#L1-L523)
-- [ReactiveComponent.php:1-35](file://framework/ReactiveComponent.php#L1-L35)
+- [AppLayout_gen.php:1-488](file://apps/calculator/gen/AppLayout_gen.php#L1-L488)
+- [ReactiveComponent.php:1-65](file://framework/ReactiveComponent.php#L1-L65)
+- [BaseRenderer.php:1-151](file://framework/BaseRenderer.php#L1-L151)
 - [Application.php:1-139](file://apps/calculator/Application.php#L1-L139)
 
 **章节来源**
-- [sfc-compiler.php:1-485](file://framework/sfc-compiler.php#L1-L485)
+- [sfc-compiler.php:1-487](file://framework/sfc-compiler.php#L1-L487)
 - [App.vue:1-203](file://apps/calculator/App.vue#L1-L203)
 
 ## 核心组件
-- **递归下降解析器（TemplateParser）**：全新的递归下降解析器，替代旧的正则表达式解析器，支持完整的XML语法规则和组件引用解析。
+- **递归下降解析器（TemplateParser）**：全新的递归下降解析器，替代旧的正则表达式解析器，支持完整的XML语法规则和组件引用解析，新增overlay属性解析和layer输出功能。
 - **组件注册系统（ComponentRegistry）**：从project.yml加载组件映射，将自定义标签名解析为.vue源文件路径。
 - **组件解析器（ComponentResolver）**：提供组件引用解析的辅助函数，包括坐标偏移和属性绑定应用。
 - **CSS映射（CssMappings）**：将CSS类样式映射为渲染参数（颜色、字号、粗细等），并提供颜色推导与解析工具。
-- **AST节点（ast-nodes.php）**：定义AppNode、RectNode、TextNode、GridNode、BtnNode、UnknownNode、ComponentRefNode等节点类型。
+- **AST节点（ast-nodes.php）**：定义AppNode、RectNode、TextNode、GridNode、BtnNode、UnknownNode、ComponentRefNode等节点类型，新增layer和groupId属性。
 - **脚本分析器（ScriptAnalyzer）**：自动分析PHP脚本，注入脏标记，消除手动脏标记的重复工作。
 - **AOT验证器（AotValidator）**：在写入生成文件前进行AOT兼容性检查，避免编译失败。
 - **编译器入口（sfc-compiler.php）**：协调各模块，执行块提取、解析、组件解析、降级、验证与代码生成。
+- **渲染器（BaseRenderer）**：实现两阶段渲染机制，支持分层绘制和命中测试。
+- **响应式组件（ReactiveComponent）**：支持组件级别的脏标记追踪，包括group级和全量重绘。
 
 **章节来源**
-- [template-parser.php:61-866](file://framework/compiler/template-parser.php#L61-L866)
+- [template-parser.php:61-869](file://framework/compiler/template-parser.php#L61-L869)
 - [component-registry.php:14-70](file://framework/compiler/component-registry.php#L14-L70)
 - [component-resolver.php:9-62](file://framework/compiler/component-resolver.php#L9-L62)
-- [css-mappings.php:15-210](file://framework/compiler/css-mappings.php#L15-210)
-- [ast-nodes.php:9-208](file://framework/compiler/ast-nodes.php#L9-L208)
+- [css-mappings.php:15-210](file://framework/compiler/css-mappings.php#L15-L210)
+- [ast-nodes.php:9-211](file://framework/compiler/ast-nodes.php#L9-L211)
 - [script-analyzer.php:15-281](file://framework/compiler/script-analyzer.php#L15-L281)
 - [aot-validator.php:17-169](file://framework/compiler/aot-validator.php#L17-L169)
-- [sfc-compiler.php:33-485](file://framework/sfc-compiler.php#L33-L485)
+- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
+- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
 
 ## 架构总览
 编译器整体流程分为八个阶段：
 1) 块提取：从.vue中抽取template/script/style三块。
 2) 样式解析：CSS类→GDI属性映射。
 3) 组件注册：从project.yml加载组件映射。
-4) 模板解析：递归下降→AST（支持组件引用）。
-5) 组件解析：解析组件引用，内联子组件布局。
-6) AST降级：AppNode→布局数组（编译时坐标计算）。
+4) 模板解析：递归下降→AST（支持组件引用和overlay属性）。
+5) 组件解析：解析组件引用，内联子组件布局，分配overlay层，设置组件边界标记。
+6) AST降级：AppNode→布局数组（编译时坐标计算，输出layer和group_id）。
 7) AOT验证：生成前校验，避免AOT失败。
-8) 代码生成：生成App.gen.php与AppLayout_gen.php。
+8) 代码生成：生成AppLayout_gen.php与App.gen.php。
 
 ```mermaid
 sequenceDiagram
@@ -148,10 +156,10 @@ CR-->>CLI : "组件映射"
 CLI->>CM : "parseStyleBlock(style)"
 CM-->>CLI : "classStyles"
 CLI->>TP : "parse(template, registry)"
-TP-->>CLI : "AppNode AST"
-CLI->>CLI : "resolveComponentRefs()"
+TP-->>CLI : "AppNode AST (含overlay属性)"
+CLI->>CLI : "resolveComponentRefs() (分配layer, 设置groupId)"
 CLI->>TP : "lowerToLayout(AST, classStyles)"
-TP-->>CLI : "elements/buttons"
+TP-->>CLI : "elements/buttons (含layer, group_id)"
 CLI->>SA : "injectDirty(script)"
 SA-->>CLI : "处理后的脚本"
 CLI->>AV : "validate(layoutCode, layoutPath)"
@@ -164,8 +172,8 @@ CLI-->>U : "完成"
 ```
 
 **图表来源**
-- [sfc-compiler.php:33-485](file://framework/sfc-compiler.php#L33-L485)
-- [template-parser.php:88-866](file://framework/compiler/template-parser.php#L88-L866)
+- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
+- [template-parser.php:88-869](file://framework/compiler/template-parser.php#L88-L869)
 - [component-registry.php:26-70](file://framework/compiler/component-registry.php#L26-L70)
 - [css-mappings.php:164-194](file://framework/compiler/css-mappings.php#L164-194)
 - [aot-validator.php:36-106](file://framework/compiler/aot-validator.php#L36-L106)
@@ -176,9 +184,9 @@ CLI-->>U : "完成"
 ### 递归下降解析器（TemplateParser）
 - **词法分析**：将模板字符串按标签、注释、文本切分为Token序列，记录行号。
 - **语法分析**：递归下降解析，支持根元素<App>、子元素<rect>/<text>/<grid>/<btn>及组件引用。
-- **组件引用解析**：支持自定义标签名解析为.vue文件，内联子组件布局。
+- **组件引用解析**：支持自定义标签名解析为.vue文件，内联子组件布局，新增overlay属性检测。
 - **错误处理**：收集TemplateParseError，包含消息与行号；未知标签生成UnknownNode而非忽略。
-- **AST降级**：将AppNode转换为elements/buttons布局数组，进行编译时坐标计算。
+- **AST降级**：将AppNode转换为elements/buttons布局数组，进行编译时坐标计算，输出layer和group_id字段。
 
 ```mermaid
 classDiagram
@@ -211,6 +219,7 @@ class TemplateNode {
 +int line
 +string vIf
 +int layer
++string groupId
 }
 class AppNode
 class RectNode
@@ -237,12 +246,12 @@ TemplateNode <|-- ComponentRefNode
 ```
 
 **图表来源**
-- [template-parser.php:61-866](file://framework/compiler/template-parser.php#L61-L866)
-- [ast-nodes.php:9-208](file://framework/compiler/ast-nodes.php#L9-L208)
+- [template-parser.php:61-869](file://framework/compiler/template-parser.php#L61-L869)
+- [ast-nodes.php:9-211](file://framework/compiler/ast-nodes.php#L9-L211)
 
 **章节来源**
-- [template-parser.php:61-866](file://framework/compiler/template-parser.php#L61-L866)
-- [ast-nodes.php:9-208](file://framework/compiler/ast-nodes.php#L9-L208)
+- [template-parser.php:61-869](file://framework/compiler/template-parser.php#L61-L869)
+- [ast-nodes.php:9-211](file://framework/compiler/ast-nodes.php#L9-L211)
 
 #### 词法分析与语法分析流程
 ```mermaid
@@ -298,6 +307,7 @@ Warn --> Done
 - **属性绑定**：将父组件的:prop绑定映射到子组件的:bind属性。
 - **条件传播**：将父组件的v-if条件传播到子组件的子元素。
 - **层管理**：为覆盖层组件分配叠加层编号。
+- **组件边界标记**：为子组件内的所有元素设置groupId为子组件的tagName。
 
 ```mermaid
 flowchart TD
@@ -309,6 +319,7 @@ CompRef --> ApplyBindings["applyPropBindings()"]
 ApplyBindings --> BindText["TextNode: bind映射"]
 CompRef --> PropagateVIf["传播v-if条件"]
 CompRef --> AssignLayer["分配叠加层"]
+CompRef --> SetGroupId["设置groupId为子组件tagName"]
 ```
 
 **图表来源**
@@ -348,7 +359,7 @@ NextRule --> End(["返回classStyles"])
 
 ### AST节点定义与验证规则
 - **节点类型**：AppNode（含title/width/height/children）、RectNode、TextNode、GridNode、BtnNode、UnknownNode、ComponentRefNode。
-- **增强功能**：支持v-if条件、层管理（layer）、覆盖层（isOverlay）。
+- **增强功能**：支持v-if条件、层管理（layer）、覆盖层（isOverlay）、组件边界标记（groupId）。
 - **验证规则**：解析阶段对缺失属性（如rect缺少class、text缺少:bind）报错；grid不允许非btn子元素；btn必须在grid内。
 - **错误收集**：TemplateParseError携带消息与行号，便于定位问题。
 
@@ -358,6 +369,7 @@ class TemplateNode {
 +int line
 +string vIf
 +int layer
++string groupId
 }
 class AppNode {
 +string title
@@ -422,10 +434,10 @@ TemplateNode <|-- ComponentRefNode
 ```
 
 **图表来源**
-- [ast-nodes.php:9-208](file://framework/compiler/ast-nodes.php#L9-L208)
+- [ast-nodes.php:9-211](file://framework/compiler/ast-nodes.php#L9-L211)
 
 **章节来源**
-- [ast-nodes.php:9-208](file://framework/compiler/ast-nodes.php#L9-L208)
+- [ast-nodes.php:9-211](file://framework/compiler/ast-nodes.php#L9-L211)
 - [template-parser.php:293-543](file://framework/compiler/template-parser.php#L293-L543)
 
 ### 脚本分析器（ScriptAnalyzer）
@@ -486,14 +498,47 @@ Php8Func --> Result
 - **组件注册**：从project.yml加载组件映射，支持相对路径解析。
 - **样式解析**：调用CssMappings::parseStyleBlock，收集警告。
 - **模板解析**：TemplateParser::parse，支持--dump-ast调试。
-- **组件解析**：resolveComponentRefs，内联子组件布局并应用偏移。
-- **AST降级**：TemplateParser::lowerToLayout，生成elements/buttons。
+- **组件解析**：resolveComponentRefs，内联子组件布局并应用偏移，分配overlay层，设置组件边界标记。
+- **AST降级**：TemplateParser::lowerToLayout，生成elements/buttons，输出layer和group_id字段。
 - **脚本分析**：ScriptAnalyzer::injectDirty，自动注入脏标记。
 - **代码生成**：生成AppLayout_gen.php（常量+函数）与App.gen.php（类继承ReactiveComponent）。
 - **AOT验证**：对两份生成文件分别验证，通过才写盘。
 
 **章节来源**
-- [sfc-compiler.php:33-485](file://framework/sfc-compiler.php#L33-L485)
+- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
+
+### 两阶段渲染机制
+- **分层渲染**：渲染器首先确定最高活跃层，然后按层从低到高渲染，确保高层完整覆盖低层。
+- **命中测试**：应用层确定最高活跃层后，从最高层向下逆序进行按钮命中测试，实现正确的点击优先级。
+- **条件处理**：低层有条件且非chrome的按钮在高层被屏蔽，避免误触发。
+- **组件边界**：通过groupId实现组件级别的脏标记追踪和渲染控制。
+
+```mermaid
+flowchart TD
+Start(["渲染开始"]) --> Phase1["Phase 1: 确定最高活跃层"]
+Phase1 --> ScanElements["扫描所有元素<br/>计算最大layer"]
+ScanElements --> ScanButtons["扫描所有按钮<br/>计算最大layer"]
+ScanButtons --> MaxLayer["得到maxLayer"]
+MaxLayer --> Phase2["Phase 2: 分层渲染"]
+Phase2 --> ForLoop["for l = 0..maxLayer"]
+ForLoop --> RenderElements["渲染本层元素"]
+RenderElements --> RenderButtons["渲染本层按钮"]
+RenderButtons --> CheckCondition{"按钮条件满足?"}
+CheckCondition --> |否| Skip["跳过按钮"]
+CheckCondition --> |是| ButtonHitTest["命中测试"]
+Skip --> NextLayer["下一层数"]
+ButtonHitTest --> NextLayer
+NextLayer --> ForLoop
+ForLoop --> End(["渲染结束"])
+```
+
+**图表来源**
+- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
+- [Application.php:100-139](file://apps/calculator/Application.php#L100-L139)
+
+**章节来源**
+- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
+- [Application.php:100-139](file://apps/calculator/Application.php#L100-L139)
 
 ## 依赖关系分析
 - sfc-compiler.php依赖：ast-nodes.php、css-mappings.php、template-parser.php、aot-validator.php、script-analyzer.php、component-registry.php、component-resolver.php。
@@ -502,7 +547,8 @@ Php8Func --> Result
 - ComponentResolver提供组件解析的共享工具函数。
 - ScriptAnalyzer独立模块，用于PHP脚本的脏标记注入。
 - 生成文件App.gen.php继承ReactiveComponent，依赖native_types。
-- 运行时Application.php依赖生成的AppLayout_gen.php与App.gen.php。
+- 运行时Application.php依赖生成的AppLayout_gen.php与App.gen.php，BaseRenderer实现两阶段渲染。
+- ReactiveComponent支持组件级别的脏标记追踪，包括group级和全量重绘。
 
 ```mermaid
 graph LR
@@ -518,8 +564,10 @@ TP --> CR
 RES --> AN
 SA --> SC
 GEN["App.gen.php"] --> RC["ReactiveComponent.php"]
-LAYOUT["AppLayout_gen.php"] --> APP["Application.php"]
-GEN --> APP
+LAYOUT["AppLayout_gen.php"] --> BR["BaseRenderer.php"]
+GEN --> BR
+BR --> APP["Application.php"]
+RC --> BR
 ```
 
 **图表来源**
@@ -528,8 +576,9 @@ GEN --> APP
 - [component-resolver.php:13-62](file://framework/compiler/component-resolver.php#L13-L62)
 - [script-analyzer.php:27-281](file://framework/compiler/script-analyzer.php#L27-L281)
 - [App.gen.php:7-262](file://apps/calculator/gen/App.gen.php#L7-L262)
-- [AppLayout_gen.php:7-523](file://apps/calculator/gen/AppLayout_gen.php#L7-L523)
-- [ReactiveComponent.php:11-35](file://framework/ReactiveComponent.php#L11-L35)
+- [AppLayout_gen.php:7-488](file://apps/calculator/gen/AppLayout_gen.php#L7-L488)
+- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
+- [BaseRenderer.php:1-151](file://framework/BaseRenderer.php#L1-151)
 - [Application.php:16-139](file://apps/calculator/Application.php#L16-L139)
 
 **章节来源**
@@ -539,12 +588,13 @@ GEN --> APP
 ## 性能考量
 - **词法分析**：线性扫描模板字符串，时间复杂度O(n)，空间开销主要为Token数组。
 - **语法分析**：递归下降，深度受限于模板层级，整体O(n)。
-- **组件解析**：递归编译子组件，最坏情况下为O(n_children)。
+- **组件解析**：递归编译子组件，最坏情况下为O(n_children)，新增overlay层分配和groupId设置。
 - **CSS映射**：逐类匹配PROPERTY_MAP，每类最多遍历PROPERTY_MAP大小次，总体O(n_classes * k_props)。
-- **AST降级**：遍历AppNode子树，元素数量决定时间，O(n_elements+n_buttons)。
+- **AST降级**：遍历AppNode子树，元素数量决定时间，O(n_elements+n_buttons)，输出layer和group_id字段。
 - **脚本分析**：状态机扫描PHP代码，时间复杂度O(n_lines)。
 - **AOT验证**：正则扫描，时间复杂度近似O(n_code)。
-- **建议优化点**：将PROPERTY_MAP改为预编译正则或哈希表，减少重复匹配；对超大模板可考虑分段解析与缓存中间结果。
+- **渲染性能**：两阶段渲染通过分层减少不必要的绘制，命中测试按层逆序，提高点击响应效率。
+- **建议优化点**：将PROPERTY_MAP改为预编译正则或哈希表，减少重复匹配；对超大模板可考虑分段解析与缓存中间结果；优化渲染器的层管理算法。
 
 ## 故障排查指南
 - **模板解析错误**
@@ -561,6 +611,12 @@ GEN --> APP
   - const数组嵌套：将const数组改为函数返回数组。
   - 变量属性/方法：改为显式if/else路由。
   - PHP8函数：替换为兼容写法（如str_contains→strpos）。
+- **渲染层问题**
+  - 症状：overlay组件显示异常或点击穿透。
+  - 排查：检查overlay组件的v-if条件是否正确，确认layer分配逻辑正常工作。
+- **组件边界问题**
+  - 症状：组件内的元素无法正确接收脏标记更新。
+  - 排查：确认groupId设置正确，检查组件解析时的边界标记逻辑。
 - **运行时渲染异常**
   - 检查生成的WINDOW_WIDTH/WINDOW_HEIGHT与实际一致。
   - 确认getLayout()返回结构与Application期望一致。
@@ -574,7 +630,7 @@ GEN --> APP
 - [Application.php:100-131](file://apps/calculator/Application.php#L100-L131)
 
 ## 结论
-本SFC编译器系统以全新的v5 M2架构实现了从.vue到.php的完整转换链路。递归下降解析器提供了精确的XML语法规则支持，组件注册系统实现了灵活的组件引用解析，增强的AST节点定义支持条件渲染和层管理，脚本分析器自动注入脏标记消除了重复工作，AOT验证器确保生成代码的编译兼容性。配合示例应用与运行时渲染器，系统展示了数据驱动的桌面应用开发模式。建议在后续版本中引入更多CSS属性支持、更完善的错误恢复与增量编译能力。
+本SFC编译器系统以全新的v5 M2架构实现了从.vue到.php的完整转换链路。递归下降解析器提供了精确的XML语法规则支持，组件注册系统实现了灵活的组件引用解析，增强的AST节点定义支持条件渲染、层管理和组件边界标记，脚本分析器自动注入脏标记消除了重复工作，AOT验证器确保生成代码的编译兼容性。新增的overlay层分配逻辑和两阶段渲染机制显著提升了复杂界面的渲染效果和交互体验。配合示例应用与运行时渲染器，系统展示了数据驱动的桌面应用开发模式。建议在后续版本中引入更多CSS属性支持、更完善的错误恢复与增量编译能力，以及更精细的组件边界管理机制。
 
 ## 附录
 
@@ -584,9 +640,9 @@ flowchart TD
 VUE[".vue文件"] --> EXTRACT["块提取<br/>template/script/style"]
 EXTRACT --> REGISTRY["组件注册<br/>project.yml"]
 EXTRACT --> CSSPARSE["CSS映射解析"]
-EXTRACT --> TLPARSE["模板解析为AST<br/>递归下降"]
-TLPARSE --> COMPRESOLVE["组件解析<br/>内联子组件"]
-COMPRESOLVE --> LOWER["AST降级为布局数组"]
+EXTRACT --> TLPARSE["模板解析为AST<br/>递归下降<br/>支持overlay属性"]
+TLPARSE --> COMPRESOLVE["组件解析<br/>内联子组件<br/>分配overlay层<br/>设置组件边界标记"]
+COMPRESOLVE --> LOWER["AST降级为布局数组<br/>输出layer和group_id"]
 LOWER --> GENLAYOUT["生成AppLayout_gen.php"]
 GENLAYOUT --> VALID1["AOT验证"]
 EXTRACT --> SCRIPT["脚本块"]
@@ -598,16 +654,17 @@ VALID2 --> WRITE
 ```
 
 **图表来源**
-- [sfc-compiler.php:33-485](file://framework/sfc-compiler.php#L33-L485)
+- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
 
 ### 关键算法实现要点
 - **词法分析**：通过正则匹配标签与注释，维护行号计数，跳过空白字符。
-- **语法分析**：严格匹配<App>根元素，限定子元素类型与位置，支持组件引用解析。
-- **组件解析**：从project.yml加载映射，递归编译子组件，应用坐标偏移和属性绑定。
+- **语法分析**：严格匹配<App>根元素，限定子元素类型与位置，支持组件引用解析和overlay属性检测。
+- **组件解析**：从project.yml加载映射，递归编译子组件，应用坐标偏移和属性绑定，分配overlay层，设置组件边界标记。
 - **CSS映射**：PROPERTY_MAP定义属性→键→解析器→默认值，hexToBgr支持简写#RGB，borderColor基于背景色推导。
-- **AST降级**：rect/text/grid/btn分别映射到elements/buttons，grid内按钮进行编译时坐标计算。
+- **AST降级**：rect/text/grid/btn分别映射到elements/buttons，grid内按钮进行编译时坐标计算，输出layer和group_id字段。
 - **脚本分析**：状态机解析PHP方法边界，自动注入脏标记，避免重复注入。
 - **AOT验证**：多条规则逐一扫描，非致命警告与致命错误分离输出。
+- **两阶段渲染**：渲染器首先确定最高活跃层，然后按层从低到高渲染，实现正确的覆盖顺序和点击优先级。
 
 **章节来源**
 - [template-parser.php:131-208](file://framework/compiler/template-parser.php#L131-L208)
@@ -617,3 +674,5 @@ VALID2 --> WRITE
 - [template-parser.php:557-683](file://framework/compiler/template-parser.php#L557-L683)
 - [script-analyzer.php:87-281](file://framework/compiler/script-analyzer.php#L87-L281)
 - [aot-validator.php:36-106](file://framework/compiler/aot-validator.php#L36-L106)
+- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
+- [Application.php:100-139](file://apps/calculator/Application.php#L100-L139)

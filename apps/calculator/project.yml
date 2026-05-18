@@ -1,4 +1,4 @@
-# VueCalc Calculator Application Configuration (v5 M2)
+# VueCalc Calculator Application Configuration (v6 M1)
 # 
 # 此文件支持独立 AOT 编译:
 #   cd <框架根>
@@ -18,11 +18,13 @@ sources:
   - ../../framework/ReactiveComponent.php
   - ../../framework/ChangeQueue.php
   - ../../framework/BaseRenderer.php
+  - ../../framework/rendering/RenderContext.php
+  - ../../framework/rendering/GdiRenderContext.php
   # C++ 桥接层
   - ../../stub
   - ../../cpp
 
-# v5 M2: Component registry — maps custom tags to .vue source files
+# v6 M1: Component registry — maps custom tags to .vue source files
 # (由 SFC 编译器读取，AOT 忽略)
 components:
   display-panel: ./components/DisplayPanel.vue
