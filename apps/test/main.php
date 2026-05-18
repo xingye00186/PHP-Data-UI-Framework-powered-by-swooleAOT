@@ -73,6 +73,25 @@ function mockCallLayoutSegment(string $name): array {
     return ['elements' => [], 'buttons' => []];
 }
 
+// 三层包装器链: outerWrapper → callLayoutSegment → getLayout_X
+function mockOuterGather(string $name): array {
+    $seg = mockCallLayoutSegment($name);
+    $elements = [];
+    foreach ((array) $seg['elements'] as $el) $elements[] = $el;
+    return ['elements' => $elements, 'buttons' => (array) $seg['buttons']];
+}
+
+// 多段收集器 — 精确模拟 BaseRenderer.render() 的收集逻辑
+function mockGatherAll(array $names): array {
+    $elements = []; $buttons = [];
+    foreach ($names as $name) {
+        $seg = mockCallLayoutSegment($name);
+        foreach ((array) $seg['elements'] as $el) $elements[] = $el;
+        foreach ((array) $seg['buttons'] as $btn) $buttons[] = $btn;
+    }
+    return ['elements' => $elements, 'buttons' => $buttons];
+}
+
 // ============================================================================
 // 类定义
 // ============================================================================
@@ -135,6 +154,22 @@ class MockRenderer {
             foreach ($seg['buttons'] as $btn) $buttons[] = $btn;
         }
         return ['elements' => $elements, 'buttons' => $buttons];
+    }
+
+    public function renderSimulation(): array {
+        $elements = []; $buttons = [];
+        foreach ($this->activeLayouts as $name => $idx) {
+            $seg = mockCallLayoutSegment($name);
+            foreach ((array) $seg['elements'] as $el) $elements[] = $el;
+            foreach ((array) $seg['buttons'] as $btn) $buttons[] = $btn;
+        }
+        // 模拟 Phase 1: 求 maxLayer
+        $maxLayer = 0;
+        foreach ($elements as $el) {
+            $layer = $el['layer'] ?? 0;
+            if ($layer > $maxLayer) $maxLayer = $layer;
+        }
+        return ['elements' => $elements, 'buttons' => $buttons, 'maxLayer' => $maxLayer];
     }
 }
 
@@ -671,6 +706,88 @@ function main(): void
         $pass++;
     } else {
         echo "[FAIL] A13: 类方法 + foreach + 包装函数 — any() 模式 (els=" . count($el13) . " btns=" . count($btn13) . ")\n";
+        $fail++;
+    }
+
+    // --- A14-A18: 深层包装器模式（多层调用链 + 深层 key 访问） ---
+    echo "\n--- A14-A18: 深层包装器模式 ---\n";
+    
+    // A14: 包装器返回后深层 key 访问（$seg['elements'][0]['type']）
+    $seg14 = mockCallLayoutSegment('app');
+    $firstEl14 = (array) $seg14['elements'];
+    $type14 = $firstEl14[0]['type'] ?? 'MISSING';
+    if ($type14 === 'rect') {
+        echo "[PASS] A14: 深层 key 访问 — wrapper→key→index→key\n";
+        $pass++;
+    } else {
+        echo "[FAIL] A14: 深层 key 访问 (got: {$type14})\n";
+        $fail++;
+    }
+    
+    // A15: foreach 遍历后访问元素内部字段（精确模拟 render() 中 $el['layer']）
+    $seg15 = mockCallLayoutSegment('app');
+    $layerOk15 = true;
+    foreach ((array) $seg15['elements'] as $el15) {
+        $layer15 = $el15['layer'] ?? -1;
+        if (!is_int($layer15)) {
+            $layerOk15 = false;
+            break;
+        }
+    }
+    if ($layerOk15) {
+        echo "[PASS] A15: foreach 内深层字段访问 — wrapper→key→(array)→foreach→key\n";
+        $pass++;
+    } else {
+        echo "[FAIL] A15: foreach 内深层字段访问\n";
+        $fail++;
+    }
+    
+    // A16: 三层包装器链 (outer → callLayoutSegment → getLayout_X)
+    $result16 = mockOuterGather('app');
+    $el16count = count((array) $result16['elements']);
+    if ($el16count === 2) {
+        echo "[PASS] A16: 三层包装器链 — outer→wrapper→inner\n";
+        $pass++;
+    } else {
+        echo "[FAIL] A16: 三层包装器链 (count={$el16count})\n";
+        $fail++;
+    }
+    
+    // A17: 多段收集 + foreach 深层访问（完整模拟 BaseRenderer.render）
+    $result17 = mockGatherAll(['app', 'num-pad']);
+    $maxLayer17 = 0;
+    $layer17ok = true;
+    foreach ((array) $result17['elements'] as $el17) {
+        $layer17 = $el17['layer'] ?? 0;
+        if (!is_int($layer17)) { $layer17ok = false; break; }
+        if ($layer17 > $maxLayer17) $maxLayer17 = $layer17;
+    }
+    $label17ok = true;
+    foreach ((array) $result17['buttons'] as $btn17) {
+        $label17 = $btn17['label'] ?? 'MISSING';
+        if (!is_string($label17)) { $label17ok = false; break; }
+    }
+    if ($layer17ok && $label17ok && count((array) $result17['elements']) === 2 && count((array) $result17['buttons']) === 3) {
+        echo "[PASS] A17: 多段收集 + 双foreach深层访问 — 完整render模拟\n";
+        $pass++;
+    } else {
+        echo "[FAIL] A17: 多段收集 + 双foreach深层访问\n";
+        $fail++;
+    }
+    
+    // A18: MockRenderer.renderSimulation — 类方法中的完整 render 流程模拟
+    $mockRenderer18 = new MockRenderer();
+    $mockRenderer18->attach('app', 1);
+    $mockRenderer18->attach('num-pad', 2);
+    $sim18 = $mockRenderer18->renderSimulation();
+    $simEls = (array) $sim18['elements'];
+    $simBtns = (array) $sim18['buttons'];
+    $simMax = $sim18['maxLayer'];
+    if (count($simEls) === 2 && count($simBtns) === 3 && is_int($simMax)) {
+        echo "[PASS] A18: 类方法 renderSimulation — 完整 BaseRenderer.render 模拟\n";
+        $pass++;
+    } else {
+        echo "[FAIL] A18: 类方法 renderSimulation (els=" . count($simEls) . " btns=" . count($simBtns) . " maxLayer=" . var_export($simMax, true) . ")\n";
         $fail++;
     }
 
