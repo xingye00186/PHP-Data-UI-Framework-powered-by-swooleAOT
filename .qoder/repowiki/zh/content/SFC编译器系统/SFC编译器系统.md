@@ -17,15 +17,16 @@
 - [AppLayout_gen.php](file://apps/calculator/gen/AppLayout_gen.php)
 - [App.vue](file://apps/calculator/App.vue)
 - [project.yml](file://apps/calculator/project.yml)
+- [开发经验与教训_v2.md](file://docs/开发经验与教训_v2.md)
 </cite>
 
 ## 更新摘要
 **变更内容**
-- 新增组件边界标记(groupId)功能，为每个AST节点添加组件标识
-- 实现overlay层分配逻辑，支持组件级别的分层渲染
-- 增强渲染器的两阶段渲染机制，实现分层绘制和命中测试
-- 更新AST节点定义，支持layer和groupId属性
-- 重构组件解析流程，集成overlay层分配和组件边界标记
+- 新增基于segment的布局生成机制，按group_id分组输出独立布局函数
+- 引入dispatch函数callLayoutSegment，支持AOT兼容的显式分发调用
+- 新增辅助函数varExportShort和groupIdToCamel，优化代码生成质量
+- 增强应用层动态布局段注册机制，消除硬编码依赖
+- 完善组件边界标记系统，支持group级脏标记追踪
 
 ## 目录
 1. [简介](#简介)
@@ -40,7 +41,7 @@
 10. [附录](#附录)
 
 ## 简介
-本文件为SFC（Single File Component）编译器系统的技术文档，面向希望理解并扩展该编译器的开发者。文档覆盖从.vue文件到.php生成文件的完整转换流程，深入解析全新的递归下降解析器架构，阐述组件注册系统如何实现组件引用解析，解释增强的AST节点定义与条件渲染支持，以及新增的组件边界标记和overlay层分配功能。同时详述自动脏标记注入、AOT验证器的工作原理，以及两阶段渲染机制的实现细节，帮助高级开发者理解和修改编译器行为。
+本文件为SFC（Single File Component）编译器系统的技术文档，面向希望理解并扩展该编译器的开发者。文档覆盖从.vue文件到.php生成文件的完整转换流程，深入解析全新的递归下降解析器架构，阐述组件注册系统如何实现组件引用解析，解释增强的AST节点定义与条件渲染支持，以及新增的基于segment的布局生成、组件边界标记和overlay层分配功能。同时详述自动脏标记注入、AOT验证器的工作原理，以及两阶段渲染机制的实现细节，帮助高级开发者理解和修改编译器行为。
 
 ## 项目结构
 该项目采用"框架模块 + 示例应用 + 生成文件 + 运行时"的分层组织：
@@ -59,16 +60,16 @@ CM["CssMappings<br/>CSS映射"]
 AV["AotValidator<br/>AOT验证器"]
 AN["AST Nodes<br/>AST节点"]
 SA["ScriptAnalyzer<br/>脚本分析器"]
-end
+END
 subgraph "生成物"
 GEN["App.gen.php"]
-LAYOUT["AppLayout_gen.php"]
-end
+LAYOUT["AppLayout_gen.php<br/>分段布局函数"]
+END
 subgraph "运行时"
-RC["ReactiveComponent.php"]
-BR["BaseRenderer.php<br/>两阶段渲染"]
-APP["Application.php<br/>CalcRenderer/CalcApp"]
-end
+RC["ReactiveComponent.php<br/>group级脏标记"]
+BR["BaseRenderer.php<br/>分段布局渲染"]
+APP["Application.php<br/>动态布局注册"]
+END
 SFC --> TP
 SFC --> CR
 SFC --> CM
@@ -87,7 +88,7 @@ BR --> APP
 ```
 
 **图表来源**
-- [sfc-compiler.php:1-487](file://framework/sfc-compiler.php#L1-L487)
+- [sfc-compiler.php:1-567](file://framework/sfc-compiler.php#L1-L567)
 - [template-parser.php:1-869](file://framework/compiler/template-parser.php#L1-L869)
 - [component-registry.php:1-70](file://framework/compiler/component-registry.php#L1-L70)
 - [css-mappings.php:1-210](file://framework/compiler/css-mappings.php#L1-L210)
@@ -95,13 +96,13 @@ BR --> APP
 - [ast-nodes.php:1-211](file://framework/compiler/ast-nodes.php#L1-L211)
 - [script-analyzer.php:1-281](file://framework/compiler/script-analyzer.php#L1-L281)
 - [App.gen.php:1-262](file://apps/calculator/gen/App.gen.php#L1-L262)
-- [AppLayout_gen.php:1-488](file://apps/calculator/gen/AppLayout_gen.php#L1-L488)
-- [ReactiveComponent.php:1-65](file://framework/ReactiveComponent.php#L1-L65)
-- [BaseRenderer.php:1-151](file://framework/BaseRenderer.php#L1-L151)
-- [Application.php:1-139](file://apps/calculator/Application.php#L1-L139)
+- [AppLayout_gen.php:1-536](file://apps/calculator/gen/AppLayout_gen.php#L1-L536)
+- [ReactiveComponent.php:1-75](file://framework/ReactiveComponent.php#L1-L75)
+- [BaseRenderer.php:1-186](file://framework/BaseRenderer.php#L1-L186)
+- [Application.php:1-146](file://apps/calculator/Application.php#L1-L146)
 
 **章节来源**
-- [sfc-compiler.php:1-487](file://framework/sfc-compiler.php#L1-L487)
+- [sfc-compiler.php:1-567](file://framework/sfc-compiler.php#L1-L567)
 - [App.vue:1-203](file://apps/calculator/App.vue#L1-L203)
 
 ## 核心组件
@@ -124,9 +125,9 @@ BR --> APP
 - [ast-nodes.php:9-211](file://framework/compiler/ast-nodes.php#L9-L211)
 - [script-analyzer.php:15-281](file://framework/compiler/script-analyzer.php#L15-L281)
 - [aot-validator.php:17-169](file://framework/compiler/aot-validator.php#L17-L169)
-- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
-- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
-- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
+- [sfc-compiler.php:33-567](file://framework/sfc-compiler.php#L33-L567)
+- [BaseRenderer.php:85-186](file://framework/BaseRenderer.php#L85-L186)
+- [ReactiveComponent.php:11-75](file://framework/ReactiveComponent.php#L11-L75)
 
 ## 架构总览
 编译器整体流程分为八个阶段：
@@ -136,8 +137,9 @@ BR --> APP
 4) 模板解析：递归下降→AST（支持组件引用和overlay属性）。
 5) 组件解析：解析组件引用，内联子组件布局，分配overlay层，设置组件边界标记。
 6) AST降级：AppNode→布局数组（编译时坐标计算，输出layer和group_id）。
-7) AOT验证：生成前校验，避免AOT失败。
-8) 代码生成：生成AppLayout_gen.php与App.gen.php。
+7) 分段布局生成：按group_id分组，生成独立的布局函数和分发器。
+8) AOT验证：生成前校验，避免AOT失败。
+9) 代码生成：生成AppLayout_gen.php与App.gen.php。
 
 ```mermaid
 sequenceDiagram
@@ -160,6 +162,7 @@ TP-->>CLI : "AppNode AST (含overlay属性)"
 CLI->>CLI : "resolveComponentRefs() (分配layer, 设置groupId)"
 CLI->>TP : "lowerToLayout(AST, classStyles)"
 TP-->>CLI : "elements/buttons (含layer, group_id)"
+CLI->>CLI : "按group_id分组生成分段布局"
 CLI->>SA : "injectDirty(script)"
 SA-->>CLI : "处理后的脚本"
 CLI->>AV : "validate(layoutCode, layoutPath)"
@@ -172,7 +175,7 @@ CLI-->>U : "完成"
 ```
 
 **图表来源**
-- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
+- [sfc-compiler.php:33-567](file://framework/sfc-compiler.php#L33-L567)
 - [template-parser.php:88-869](file://framework/compiler/template-parser.php#L88-L869)
 - [component-registry.php:26-70](file://framework/compiler/component-registry.php#L26-L70)
 - [css-mappings.php:164-194](file://framework/compiler/css-mappings.php#L164-194)
@@ -500,12 +503,62 @@ Php8Func --> Result
 - **模板解析**：TemplateParser::parse，支持--dump-ast调试。
 - **组件解析**：resolveComponentRefs，内联子组件布局并应用偏移，分配overlay层，设置组件边界标记。
 - **AST降级**：TemplateParser::lowerToLayout，生成elements/buttons，输出layer和group_id字段。
+- **分段布局生成**：按group_id分组，生成独立的布局函数和分发器。
 - **脚本分析**：ScriptAnalyzer::injectDirty，自动注入脏标记。
 - **代码生成**：生成AppLayout_gen.php（常量+函数）与App.gen.php（类继承ReactiveComponent）。
 - **AOT验证**：对两份生成文件分别验证，通过才写盘。
 
 **章节来源**
-- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
+- [sfc-compiler.php:33-567](file://framework/sfc-compiler.php#L33-L567)
+
+### 基于segment的布局生成系统
+- **分组机制**：按groupId将元素和按钮分组，支持多个独立布局段。
+- **布局函数**：为每个group_id生成独立的getLayout_{group}函数，返回elements和buttons数组。
+- **分发器**：生成callLayoutSegment函数，支持AOT兼容的显式分发调用。
+- **名称管理**：使用groupIdToCamel函数将kebab-case转换为camelCase作为函数后缀。
+- **代码质量**：使用varExportShort函数生成短数组语法，提升可读性。
+
+```mermaid
+flowchart TD
+Input["布局数据<br/>elements/buttons"] --> GroupBy["按group_id分组"]
+GroupBy --> GenerateFunc["生成布局函数"]
+GenerateFunc --> VarExport["varExportShort格式化"]
+GenerateFunc --> CamelCase["groupIdToCamel转换"]
+GenerateFunc --> Dispatch["生成分发器"]
+Dispatch --> CallSegment["callLayoutSegment函数"]
+CallSegment --> SegmentNames["getLayoutSegmentNames函数"]
+SegmentNames --> Output["生成最终布局文件"]
+```
+
+**图表来源**
+- [sfc-compiler.php:341-410](file://framework/sfc-compiler.php#L341-L410)
+
+**章节来源**
+- [sfc-compiler.php:183-204](file://framework/sfc-compiler.php#L183-L204)
+- [sfc-compiler.php:341-410](file://framework/sfc-compiler.php#L341-L410)
+
+### 动态布局段注册机制
+- **应用层集成**：Application类通过getLayoutSegmentNames()动态获取所有可用布局段。
+- **自动注册**：遍历布局段名称，自动调用attachLayout进行注册。
+- **消除硬编码**：避免手动维护布局段列表，防止camelCase/kebab-case不一致导致的运行时错误。
+- **AOT兼容**：使用显式函数调用而非变量函数，确保AOT编译兼容性。
+
+```mermaid
+flowchart TD
+Init["应用初始化"] --> GetNames["getLayoutSegmentNames()"]
+GetNames --> Loop["遍历布局段名称"]
+Loop --> Attach["attachLayout(name, index)"]
+Attach --> Register["自动注册所有布局段"]
+Register --> Render["渲染器使用"]
+```
+
+**图表来源**
+- [Application.php:42-46](file://apps/calculator/Application.php#L42-L46)
+- [BaseRenderer.php:42-52](file://framework/BaseRenderer.php#L42-L52)
+
+**章节来源**
+- [Application.php:40-50](file://apps/calculator/Application.php#L40-L50)
+- [BaseRenderer.php:28-52](file://framework/BaseRenderer.php#L28-L52)
 
 ### 两阶段渲染机制
 - **分层渲染**：渲染器首先确定最高活跃层，然后按层从低到高渲染，确保高层完整覆盖低层。
@@ -533,12 +586,12 @@ ForLoop --> End(["渲染结束"])
 ```
 
 **图表来源**
-- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
-- [Application.php:100-139](file://apps/calculator/Application.php#L100-L139)
+- [BaseRenderer.php:124-184](file://framework/BaseRenderer.php#L124-L184)
+- [Application.php:109-139](file://apps/calculator/Application.php#L109-L139)
 
 **章节来源**
-- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
-- [Application.php:100-139](file://apps/calculator/Application.php#L100-L139)
+- [BaseRenderer.php:124-184](file://framework/BaseRenderer.php#L124-L184)
+- [Application.php:109-139](file://apps/calculator/Application.php#L109-L139)
 
 ## 依赖关系分析
 - sfc-compiler.php依赖：ast-nodes.php、css-mappings.php、template-parser.php、aot-validator.php、script-analyzer.php、component-registry.php、component-resolver.php。
@@ -576,10 +629,10 @@ RC --> BR
 - [component-resolver.php:13-62](file://framework/compiler/component-resolver.php#L13-L62)
 - [script-analyzer.php:27-281](file://framework/compiler/script-analyzer.php#L27-L281)
 - [App.gen.php:7-262](file://apps/calculator/gen/App.gen.php#L7-L262)
-- [AppLayout_gen.php:7-488](file://apps/calculator/gen/AppLayout_gen.php#L7-L488)
-- [ReactiveComponent.php:11-65](file://framework/ReactiveComponent.php#L11-L65)
-- [BaseRenderer.php:1-151](file://framework/BaseRenderer.php#L1-151)
-- [Application.php:16-139](file://apps/calculator/Application.php#L16-L139)
+- [AppLayout_gen.php:7-536](file://apps/calculator/gen/AppLayout_gen.php#L7-L536)
+- [ReactiveComponent.php:11-75](file://framework/ReactiveComponent.php#L11-L75)
+- [BaseRenderer.php:1-186](file://framework/BaseRenderer.php#L1-186)
+- [Application.php:16-146](file://apps/calculator/Application.php#L16-L146)
 
 **章节来源**
 - [sfc-compiler.php:20-28](file://framework/sfc-compiler.php#L20-L28)
@@ -591,6 +644,7 @@ RC --> BR
 - **组件解析**：递归编译子组件，最坏情况下为O(n_children)，新增overlay层分配和groupId设置。
 - **CSS映射**：逐类匹配PROPERTY_MAP，每类最多遍历PROPERTY_MAP大小次，总体O(n_classes * k_props)。
 - **AST降级**：遍历AppNode子树，元素数量决定时间，O(n_elements+n_buttons)，输出layer和group_id字段。
+- **分段布局生成**：按group_id分组，时间复杂度O(n_elements+n_buttons)，新增varExportShort和groupIdToCamel处理。
 - **脚本分析**：状态机扫描PHP代码，时间复杂度O(n_lines)。
 - **AOT验证**：正则扫描，时间复杂度近似O(n_code)。
 - **渲染性能**：两阶段渲染通过分层减少不必要的绘制，命中测试按层逆序，提高点击响应效率。
@@ -617,6 +671,12 @@ RC --> BR
 - **组件边界问题**
   - 症状：组件内的元素无法正确接收脏标记更新。
   - 排查：确认groupId设置正确，检查组件解析时的边界标记逻辑。
+- **分段布局问题**
+  - 症状：callLayoutSegment返回空数组或布局段不显示。
+  - 排查：确认Application.php中attachLayout使用的是kebab-case格式，与分发器中的group_id保持一致。
+- **动态注册问题**
+  - 症状：布局段未正确注册或运行时崩溃。
+  - 排查：检查getLayoutSegmentNames()返回的名称列表，确认没有硬编码的名称列表。
 - **运行时渲染异常**
   - 检查生成的WINDOW_WIDTH/WINDOW_HEIGHT与实际一致。
   - 确认getLayout()返回结构与Application期望一致。
@@ -627,10 +687,10 @@ RC --> BR
 - [sfc-compiler.php:107-126](file://framework/sfc-compiler.php#L107-L126)
 - [css-mappings.php:185-188](file://framework/compiler/css-mappings.php#L185-L188)
 - [aot-validator.php:36-106](file://framework/compiler/aot-validator.php#L36-L106)
-- [Application.php:100-131](file://apps/calculator/Application.php#L100-L131)
+- [Application.php:109-139](file://apps/calculator/Application.php#L109-L139)
 
 ## 结论
-本SFC编译器系统以全新的v5 M2架构实现了从.vue到.php的完整转换链路。递归下降解析器提供了精确的XML语法规则支持，组件注册系统实现了灵活的组件引用解析，增强的AST节点定义支持条件渲染、层管理和组件边界标记，脚本分析器自动注入脏标记消除了重复工作，AOT验证器确保生成代码的编译兼容性。新增的overlay层分配逻辑和两阶段渲染机制显著提升了复杂界面的渲染效果和交互体验。配合示例应用与运行时渲染器，系统展示了数据驱动的桌面应用开发模式。建议在后续版本中引入更多CSS属性支持、更完善的错误恢复与增量编译能力，以及更精细的组件边界管理机制。
+本SFC编译器系统以全新的v6 M1架构实现了从.vue到.php的完整转换链路。递归下降解析器提供了精确的XML语法规则支持，组件注册系统实现了灵活的组件引用解析，增强的AST节点定义支持条件渲染、层管理和组件边界标记，脚本分析器自动注入脏标记消除了重复工作，AOT验证器确保生成代码的编译兼容性。新增的基于segment的布局生成机制显著提升了大型应用的渲染性能和维护性，通过按group_id分组输出独立布局函数，配合AOT兼容的分发器和动态布局段注册，实现了真正的模块化布局管理。配合示例应用与运行时渲染器，系统展示了数据驱动的桌面应用开发模式。建议在后续版本中引入更多CSS属性支持、更完善的错误恢复与增量编译能力，以及更精细的组件边界管理机制。
 
 ## 附录
 
@@ -643,7 +703,10 @@ EXTRACT --> CSSPARSE["CSS映射解析"]
 EXTRACT --> TLPARSE["模板解析为AST<br/>递归下降<br/>支持overlay属性"]
 TLPARSE --> COMPRESOLVE["组件解析<br/>内联子组件<br/>分配overlay层<br/>设置组件边界标记"]
 COMPRESOLVE --> LOWER["AST降级为布局数组<br/>输出layer和group_id"]
-LOWER --> GENLAYOUT["生成AppLayout_gen.php"]
+LOWER --> GROUPBY["按group_id分组"]
+GROUPBY --> SEGMENT["生成分段布局函数"]
+SEGMENT --> DISPATCH["生成分发器"]
+DISPATCH --> GENLAYOUT["生成AppLayout_gen.php"]
 GENLAYOUT --> VALID1["AOT验证"]
 EXTRACT --> SCRIPT["脚本块"]
 SCRIPT --> SCRIPTANALYZE["脚本分析<br/>自动脏标记注入"]
@@ -654,7 +717,7 @@ VALID2 --> WRITE
 ```
 
 **图表来源**
-- [sfc-compiler.php:33-487](file://framework/sfc-compiler.php#L33-L487)
+- [sfc-compiler.php:33-567](file://framework/sfc-compiler.php#L33-L567)
 
 ### 关键算法实现要点
 - **词法分析**：通过正则匹配标签与注释，维护行号计数，跳过空白字符。
@@ -662,6 +725,9 @@ VALID2 --> WRITE
 - **组件解析**：从project.yml加载映射，递归编译子组件，应用坐标偏移和属性绑定，分配overlay层，设置组件边界标记。
 - **CSS映射**：PROPERTY_MAP定义属性→键→解析器→默认值，hexToBgr支持简写#RGB，borderColor基于背景色推导。
 - **AST降级**：rect/text/grid/btn分别映射到elements/buttons，grid内按钮进行编译时坐标计算，输出layer和group_id字段。
+- **分段布局生成**：按group_id分组，生成独立的getLayout_{group}函数，使用groupIdToCamel转换函数名后缀，varExportShort生成短数组语法。
+- **分发器**：callLayoutSegment函数支持AOT兼容的显式分发调用，避免变量函数导致的类型丢失问题。
+- **动态注册**：Application类通过getLayoutSegmentNames()动态获取布局段列表，自动注册所有可用布局段。
 - **脚本分析**：状态机解析PHP方法边界，自动注入脏标记，避免重复注入。
 - **AOT验证**：多条规则逐一扫描，非致命警告与致命错误分离输出。
 - **两阶段渲染**：渲染器首先确定最高活跃层，然后按层从低到高渲染，实现正确的覆盖顺序和点击优先级。
@@ -672,7 +738,10 @@ VALID2 --> WRITE
 - [sfc-compiler.php:93-179](file://framework/sfc-compiler.php#L93-L179)
 - [css-mappings.php:27-151](file://framework/compiler/css-mappings.php#L27-L151)
 - [template-parser.php:557-683](file://framework/compiler/template-parser.php#L557-L683)
+- [sfc-compiler.php:183-204](file://framework/sfc-compiler.php#L183-L204)
+- [sfc-compiler.php:341-410](file://framework/sfc-compiler.php#L341-L410)
+- [Application.php:40-50](file://apps/calculator/Application.php#L40-L50)
 - [script-analyzer.php:87-281](file://framework/compiler/script-analyzer.php#L87-L281)
 - [aot-validator.php:36-106](file://framework/compiler/aot-validator.php#L36-L106)
-- [BaseRenderer.php:85-151](file://framework/BaseRenderer.php#L85-L151)
-- [Application.php:100-139](file://apps/calculator/Application.php#L100-L139)
+- [BaseRenderer.php:124-184](file://framework/BaseRenderer.php#L124-L184)
+- [Application.php:109-139](file://apps/calculator/Application.php#L109-L139)
